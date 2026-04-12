@@ -293,12 +293,12 @@ end
 -- NPC RENDERER (with personality colors, bounce, head rotation)
 ----------------------------------------------------------------------------
 local MOOD_COLORS = {
-    happy   = {0.2, 0.9, 0.3},
-    excited = {1.0, 0.8, 0.1},
-    cold    = {0.3, 0.5, 1.0},
-    hungry  = {0.9, 0.5, 0.1},
-    content = {0.5, 0.8, 0.5},
-    neutral = {0.6, 0.6, 0.6},
+    happy     = {0.2, 0.9, 0.3},
+    content   = {0.5, 0.8, 0.5},
+    neutral   = {0.6, 0.6, 0.6},
+    sad       = {0.3, 0.4, 0.8},
+    miserable = {0.2, 0.2, 0.5},
+    excited   = {1.0, 0.8, 0.1},
 }
 
 function drawNPC(pass, npc, dl)

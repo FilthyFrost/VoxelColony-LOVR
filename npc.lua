@@ -88,6 +88,8 @@ function NPC.new(config, world, items, startX, startZ, allNpcs)
 
     -- Mood & thought
     self.mood = "neutral"
+    self.moodValue = 0          -- -100 to +100
+    self.moodFactors = {}       -- list of current mood factors
     self.thought = nil
     self.thoughtTimer = 0
 
@@ -280,7 +282,13 @@ function NPC:_think()
         {name = "sleep",          score = self:_scoreSleep()},
         {name = "socialize",      score = self:_scoreSocialize()},
     }
-    for _, c in ipairs(candidates) do c.score = c.score + math.random() * 2 end
+    for _, c in ipairs(candidates) do
+        c.score = c.score + math.random() * 2
+        -- Mood efficiency: happy=+10%, sad=-20%, miserable=-50%
+        if self.moodValue > 30 then c.score = c.score * 1.1
+        elseif self.moodValue < -50 then c.score = c.score * 0.5
+        elseif self.moodValue < -30 then c.score = c.score * 0.8 end
+    end
     local best = candidates[1]
     for i = 2, #candidates do
         if candidates[i].score > best.score then best = candidates[i] end
@@ -1071,15 +1079,49 @@ end
 -- MOOD & THOUGHTS
 ----------------------------------------------------------------------------
 function NPC:_updateMood()
-    if self.mood == "excited" and self.thoughtTimer > 0 then return end
-    local tempR = self.temperature / self.cfg.TEMP_MAX
-    local hungerR = self.hunger / self.cfg.HUNGER_MAX
-    if self.gratitude > 50 then       self.mood = "happy"
-    elseif tempR < 0.3 then          self.mood = "cold"
-    elseif hungerR < 0.3 then        self.mood = "hungry"
-    elseif self.comfort > 60 then    self.mood = "content"
-    else                              self.mood = "neutral"
+    if self.excited and self.thoughtTimer > 0 then self.mood = "excited"; return end
+
+    local m = 0
+    local factors = {}
+
+    -- Hunger
+    if self.hunger > 60 then m = m + 5
+    elseif self.hunger < 20 then m = m - 20; factors[#factors+1] = "starving" end
+
+    -- Stamina
+    if self.stamina > 50 then m = m + 3
+    elseif self.stamina < 15 then m = m - 15; factors[#factors+1] = "exhausted" end
+
+    -- Temperature
+    if self.temperature > 70 then m = m + 3
+    elseif self.temperature < 30 then m = m - 15; factors[#factors+1] = "freezing" end
+
+    -- Social
+    if self.socialNeed > 60 then m = m + 10
+    elseif self.socialNeed < 20 then m = m - 15; factors[#factors+1] = "lonely" end
+
+    -- Environment
+    if self:_hasShelter() then m = m + 10 end
+    if self.comfort > 50 then m = m + 5 end
+
+    -- Friends
+    local friendCount = 0
+    for _, rel in pairs(self.relationships) do
+        if rel.affinity >= self.cfg.AFFINITY_FRIEND then friendCount = friendCount + 1 end
     end
+    if friendCount > 0 then m = m + 5 + math.min(friendCount * 3, 15) end
+
+    -- Gratitude
+    if self.gratitude > 30 then m = m + 10 end
+
+    self.moodValue = math.max(-100, math.min(100, m))
+    self.moodFactors = factors
+
+    if m > 40 then self.mood = "happy"
+    elseif m > 10 then self.mood = "content"
+    elseif m > -20 then self.mood = "neutral"
+    elseif m > -50 then self.mood = "sad"
+    else self.mood = "miserable" end
 end
 
 function NPC:_setThought(key)
