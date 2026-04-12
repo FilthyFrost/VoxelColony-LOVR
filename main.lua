@@ -304,6 +304,47 @@ local MOOD_COLORS = {
 function drawNPC(pass, npc, dl)
     local x, z = npc.x, npc.z
     local baseY = npc.y
+
+    -- Sleeping: render lying down with Zzz
+    if npc.sleeping then
+        local skinR = 0.85 * dl
+        local shirtR, shirtG, shirtB
+        if npc.shirtColor then
+            shirtR = npc.shirtColor[1] * dl
+            shirtG = npc.shirtColor[2] * dl
+            shirtB = npc.shirtColor[3] * dl
+        else
+            shirtR, shirtG, shirtB = 0.2 * dl, 0.5 * dl, 0.8 * dl
+        end
+        -- Body lying on ground
+        pass:setColor(shirtR, shirtG, shirtB)
+        pass:box(x, baseY + 0.15, z, 0.8, 0.2, 0.3)
+        -- Head
+        pass:setColor(skinR, 0.70 * dl, 0.55 * dl)
+        pass:box(x + 0.35, baseY + 0.15, z, 0.22, 0.22, 0.22)
+        -- Zzz bubble
+        local toCamX = cam.x - x
+        local toCamZ = cam.z - z
+        local angle = math.atan2(toCamX, toCamZ)
+        pass:push()
+        pass:translate(x, baseY + 0.6, z)
+        pass:rotate(angle, 0, 1, 0)
+        pass:setColor(1, 1, 1, 0.6 + 0.3 * math.sin(gameTime * 2))
+        local zzz = string.rep("z", 1 + math.floor(gameTime % 3))
+        pass:text(zzz, 0, 0, 0, 0.12)
+        pass:pop()
+        -- Sleep quality indicator
+        if npc.sleepQuality == 2 then
+            pass:setColor(0.2, 0.9, 0.3, 0.5)  -- green = bed
+        elseif npc.sleepQuality == 1 then
+            pass:setColor(0.8, 0.8, 0.2, 0.5)  -- yellow = indoor
+        else
+            pass:setColor(0.8, 0.3, 0.3, 0.5)  -- red = ground
+        end
+        pass:sphere(x - 0.3, baseY + 0.35, z, 0.06)
+        return  -- Don't draw normal body
+    end
+
     local isMoving = npc.task ~= nil and not npc.dead
     local swing = isMoving and math.sin(gameTime * 8) * 0.4 or 0
 
@@ -473,7 +514,9 @@ function drawHUD(pass)
             if label == "fetch_block" then label = "fetch"
             elseif label == "place_block" then label = "place"
             elseif label == "break_block" then label = "break"
-            elseif label == "fetch_eat" then label = "eat" end
+            elseif label == "fetch_eat" then label = "eat"
+            elseif label == "go_sleep" then label = "sleep" end
+            if npc.sleeping then label = "Zzz" end
 
             local displayName = npc.name or ("NPC" .. i)
             local moodStr = npc:getMood()
@@ -488,7 +531,7 @@ function drawHUD(pass)
             end
 
             pass:setColor(1, 1, 1, 0.9)
-            pass:text(string.format("%s [%s] %s", displayName, label, moodStr),
+            pass:text(string.format("%s [%s] %s S:%.0f", displayName, label, moodStr, npc.stamina),
                 w - 120, lineY, 0, px(11))
         end
     end

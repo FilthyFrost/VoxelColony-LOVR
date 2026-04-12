@@ -58,4 +58,18 @@ C.GIFT_BOUNCE_AMPLITUDE = 0.15    -- bounce height
 C.GIFT_BOUNCE_FREQUENCY = 10      -- bounces per second
 C.NPC_REACH_HEIGHT = 2             -- NPC can interact with blocks gy..gy+2
 
+-- Stamina / Sleep system
+C.STAMINA_MAX = 100
+C.STAMINA_DECAY_IDLE = 0.05         -- standing/wandering per second
+C.STAMINA_DECAY_WALK = 0.15         -- walking per second
+C.STAMINA_DECAY_WORK = 0.3          -- building/carrying per second
+C.STAMINA_REGEN_STAND = 0.1         -- standing rest
+C.STAMINA_REGEN_SLEEP_GROUND = 0.3  -- sleeping on ground
+C.STAMINA_REGEN_SLEEP_INDOOR = 0.5  -- sleeping on indoor floor
+C.STAMINA_REGEN_SLEEP_BED = 1.0     -- sleeping in bed
+C.STAMINA_TIRED = 30                -- below: fatigued (slow movement)
+C.STAMINA_EXHAUSTED = 10            -- below: forced collapse (RimWorld threshold interrupt)
+C.STAMINA_WAKEUP = 90               -- above: wake up naturally
+C.STAMINA_HUNGRY_WAKEUP = 15        -- hunger below: wake up hungry
+
 return C

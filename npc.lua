@@ -27,6 +27,9 @@ local THOUGHT_MAP = {
     need_wall      = {icon = "brick",  text = "Need walls!"},
     need_roof      = {icon = "roof",   text = "Need roof!"},
     need_food      = {icon = "apple",  text = "Need food!"},
+    sleep          = {icon = "bed",    text = "Sleepy..."},
+    sleeping       = {icon = "zzz",    text = "Zzz"},
+    sleep_exhausted= {icon = "zzz",    text = "So tired!"},
     idle           = {icon = "dots",   text = "..."},
 }
 
@@ -64,6 +67,12 @@ function NPC.new(config, world, items, startX, startZ, allNpcs)
     self.temperature = config.TEMP_MAX * 0.5
     self.hunger = config.HUNGER_MAX
     self.dead = false
+
+    -- Stamina / Sleep
+    self.stamina = config.STAMINA_MAX
+    self.sleeping = false
+    self.sleepPos = nil        -- {x, z} for rendering
+    self.sleepQuality = 0      -- 0=ground, 1=indoor, 2=bed
 
     -- Desires
     self.comfort = 0
@@ -134,6 +143,68 @@ function NPC:update(dt)
 
     if self.temperature <= 0 or self.hunger <= 0 then self.dead = true; return end
 
+    -- Stamina / Sleep system
+    if self.sleeping then
+        -- Recover stamina based on sleep quality
+        local regenRate
+        if self.sleepQuality == 2 then
+            regenRate = self.cfg.STAMINA_REGEN_SLEEP_BED
+        elseif self.sleepQuality == 1 then
+            regenRate = self.cfg.STAMINA_REGEN_SLEEP_INDOOR
+        else
+            regenRate = self.cfg.STAMINA_REGEN_SLEEP_GROUND
+        end
+        self.stamina = math.min(self.cfg.STAMINA_MAX, self.stamina + regenRate * dt)
+
+        -- Smooth render position (keep interpolating even while sleeping)
+        local spd = 8 * dt
+        self.x = self.x + (self.gx - self.x) * spd
+        self.y = self.y + (self.gy - self.y) * spd
+        self.z = self.z + (self.gz - self.z) * spd
+
+        -- Wake up conditions
+        if self.stamina >= self.cfg.STAMINA_WAKEUP
+           or self.hunger < self.cfg.STAMINA_HUNGRY_WAKEUP then
+            self.sleeping = false
+            self.sleepPos = nil
+            self.task = nil
+            self.thinkTimer = 0
+        end
+        return  -- Skip all other logic while sleeping
+    end
+
+    -- Stamina decay (when awake)
+    local staminaDecay
+    if self.task then
+        local t = self.task.type
+        if t == "place_block" or t == "break_block" or t == "fetch_block" then
+            staminaDecay = self.cfg.STAMINA_DECAY_WORK
+        elseif t == "go_sleep" then
+            staminaDecay = self.cfg.STAMINA_DECAY_WALK
+        else
+            staminaDecay = self.cfg.STAMINA_DECAY_WALK
+        end
+    else
+        staminaDecay = self.cfg.STAMINA_DECAY_IDLE
+    end
+    self.stamina = math.max(0, self.stamina - staminaDecay * dt)
+
+    -- RimWorld threshold interrupt: forced collapse when exhausted
+    if self.stamina < self.cfg.STAMINA_EXHAUSTED then
+        self.sleeping = true
+        self.sleepPos = {x = self.gx, z = self.gz}
+        self:_dropBlock()
+        self.task = nil
+        -- Determine sleep quality at current position
+        if indoors then
+            self.sleepQuality = self:_findNearbyBed() and 2 or 1
+        else
+            self.sleepQuality = 0
+        end
+        self:_setThought("sleep_exhausted")
+        return
+    end
+
     self.resourceCacheTimer = self.resourceCacheTimer - dt
     if self.resourceCacheTimer <= 0 then
         self.resourceCache = self.world:countLooseByType()
@@ -196,6 +267,7 @@ function NPC:_think()
         {name = "stockpile",      score = self:_scoreStockpile()},
         {name = "furnish_home",   score = self:_scoreFurnishHome()},
         {name = "build_bigger",   score = self:_scoreBuildBigger()},
+        {name = "sleep",          score = self:_scoreSleep()},
     }
     for _, c in ipairs(candidates) do c.score = c.score + math.random() * 2 end
     local best = candidates[1]
@@ -302,6 +374,43 @@ function NPC:_scoreBuildBigger()
     return 80 + self.gratitude * 0.2
 end
 
+function NPC:_scoreSleep()
+    if self.sleeping then return 0 end
+    local staminaR = self.stamina / self.cfg.STAMINA_MAX
+    -- Sigmoid response curve: urgency spikes sharply below 30% stamina
+    local urgency = 1 / (1 + math.exp(-12 * (1 - staminaR - 0.7)))
+    local base = urgency * 95
+    if self.world.isNight then base = base + 15 end
+    if self:_hasShelter() then base = base + 5 end
+    return base
+end
+
+function NPC:_findNearbyBed()
+    if self.blueprint then
+        local bp = self.blueprint
+        for _, b in ipairs(self.world.blocks) do
+            if b.itemType == "bed" and b.state == "placed" then
+                if b.gx >= bp.originX and b.gx < bp.originX + bp.width
+                   and b.gz >= bp.originZ and b.gz < bp.originZ + bp.depth then
+                    return b
+                end
+            end
+        end
+    end
+    return nil
+end
+
+function NPC:_findBed()
+    local best, bestD2 = nil, math.huge
+    for _, b in ipairs(self.world.blocks) do
+        if b.itemType == "bed" and b.state == "placed" then
+            local d2 = (b.gx - self.gx)^2 + (b.gz - self.gz)^2
+            if d2 < bestD2 then best, bestD2 = b, d2 end
+        end
+    end
+    return best
+end
+
 ----------------------------------------------------------------------------
 -- DECISIONS
 ----------------------------------------------------------------------------
@@ -324,6 +433,25 @@ function NPC:_executeDecision(name)
         self:_execFurnishHome()
     elseif name == "build_bigger" then
         self:_execBuildBigger()
+    elseif name == "sleep" then
+        self:_execSleep()
+    end
+end
+
+function NPC:_execSleep()
+    local bed = self:_findBed()
+    if bed then
+        self.task = {type = "go_sleep", target = {x = bed.gx, z = bed.gz, y = bed.gy},
+                     timer = 0, bedRef = bed}
+    elseif self:_hasShelter() then
+        self.task = {type = "go_sleep", target = {x = self.homeX, z = self.homeZ, y = 0},
+                     timer = 0, bedRef = nil}
+    else
+        -- No bed, no shelter: sleep right here
+        self.sleeping = true
+        self.sleepPos = {x = self.gx, z = self.gz}
+        self.sleepQuality = 0
+        self.task = nil
     end
 end
 
@@ -489,6 +617,7 @@ function NPC:_executeTask(dt)
     elseif t == "fetch_eat" then   self:_doFetchEat(dt)
     elseif t == "go_home" then     self:_doGoHome(dt)
     elseif t == "stockpile" then   self:_doStockpile(dt)
+    elseif t == "go_sleep" then    self:_doGoSleep(dt)
     end
 end
 
@@ -625,6 +754,25 @@ function NPC:_doStockpile(dt)
     end
 end
 
+function NPC:_doGoSleep(dt)
+    local tgt = self.task.target
+    if self:_adjacentTo(tgt.x, tgt.z) or (self.gx == tgt.x and self.gz == tgt.z) then
+        self.sleeping = true
+        self.sleepPos = {x = self.gx, z = self.gz}
+        if self.task.bedRef and self.task.bedRef.state == "placed" then
+            self.sleepQuality = 2
+        elseif self.world:hasRoof(self.gx, self.gz) then
+            self.sleepQuality = 1
+        else
+            self.sleepQuality = 0
+        end
+        self:_setThought("sleeping")
+        self.task = nil
+    else
+        self:_moveTo(tgt.x, 0, tgt.z, dt)
+    end
+end
+
 ----------------------------------------------------------------------------
 -- MOVEMENT
 ----------------------------------------------------------------------------
@@ -669,6 +817,7 @@ function NPC:_followPath(dt)
     if self.traits.diligent then stepTime = stepTime * 0.8 end
     if self.traits.lazy then stepTime = stepTime * 1.3 end
     if self.excited then stepTime = stepTime / self.cfg.GIFT_EXCITED_SPEED_MULT end
+    if self.stamina < self.cfg.STAMINA_TIRED then stepTime = stepTime * 1.4 end
     self.stepTimer = stepTime
     local wp = self.path[self.pathIdx]
     self.gx, self.gy, self.gz = wp.x, wp.y, wp.z
