@@ -322,11 +322,14 @@ end
 function NPC:_scoreHelpBuild()
     if self.blueprint and not self.blueprint.completed then return 0 end
     if self.helpingBlueprint and not self.helpingBlueprint.completed then return 0 end
+    -- Check for help_needed markers (indirect communication)
+    local helpMarkers = self.world:getMarkersNear(self.gx, self.gz, 15, "help_needed")
+    local markerBonus = #helpMarkers > 0 and 15 or 0
     for _, other in ipairs(self.allNpcs) do
         if other ~= self and other.blueprint and not other.blueprint.completed then
             local dist = math.abs(self.gx - other.gx) + math.abs(self.gz - other.gz)
-            if dist <= 12 then
-                local base = 75
+            if dist <= 15 then
+                local base = 75 + markerBonus
                 if self.traits.social then base = base * 1.4 end
                 if self.traits.shy then base = base * 0.5 end
                 return base
@@ -349,6 +352,9 @@ function NPC:_scoreEat()
     if (self.resourceCache["apple"] or 0) <= 0 then return 0 end
     local base = (1 - hungerR) * 80
     if self.traits.greedy then base = base * 1.4 end
+    -- food_here markers boost eating urgency
+    local foodMarkers = self.world:getMarkersNear(self.gx, self.gz, 15, "food_here")
+    if #foodMarkers > 0 then base = base + 10 end
     return base
 end
 
@@ -664,6 +670,8 @@ function NPC:_pushBuildTask()
                 if not bp.furnished and bp.width >= 5 and bp.depth >= 5 then
                     Blueprint.addFurnishingSteps(bp, self.world, self.items)
                 end
+                -- Publish home_here marker
+                self.world:addMarker("home_here", self.homeX, self.homeZ, self.npcId)
             end
         end
         self.task = nil
@@ -699,6 +707,8 @@ function NPC:_pushBuildTask()
                 if step.need == "wall" then self:_setThought("need_wall"); self.thoughtTimer = 5
                 elseif step.need == "roof" then self:_setThought("need_roof"); self.thoughtTimer = 5
                 end
+                -- Publish help_needed marker
+                self.world:addMarker("help_needed", self.gx, self.gz, self.npcId)
             end
         end
     elseif step.action == "break" then
@@ -1163,12 +1173,15 @@ function NPC:_findFood()
             if b.itemType == "apple" and (b.state == "placed" or b.state == "loose") then
                 if b.gx >= bp.originX and b.gx < bp.originX + bp.width
                     and b.gz >= bp.originZ and b.gz < bp.originZ + bp.depth then
+                    self.world:addMarker("food_here", b.gx, b.gz, self.npcId)
                     return b
                 end
             end
         end
     end
-    return self.world:nearestLoose(self.gx, self.gz, "apple")
+    local food = self.world:nearestLoose(self.gx, self.gz, "apple")
+    if food then self.world:addMarker("food_here", food.gx, food.gz, self.npcId) end
+    return food
 end
 
 function NPC:getState()

@@ -11,6 +11,7 @@ function W.new(config, items)
     self.occupied = {}     -- "x,y,z" -> block ref
     self.time = 0
     self.isNight = false
+    self.markers = {}          -- communication markers
     return self
 end
 
@@ -26,6 +27,14 @@ function W:update(dt)
         if b.state == "placed" then
             b.dur = b.dur - dt
             if b.dur <= 0 then self:_removeAt(i) end
+        end
+    end
+
+    -- Marker decay
+    for i = #self.markers, 1, -1 do
+        self.markers[i].strength = self.markers[i].strength - 0.5 * dt
+        if self.markers[i].strength <= 0 then
+            table.remove(self.markers, i)
         end
     end
 end
@@ -212,6 +221,38 @@ function W:demolishBuilding(blueprint)
             end
         end
     end
+end
+
+----------------------------------------------------------------------------
+-- MARKER COMMUNICATION SYSTEM
+----------------------------------------------------------------------------
+function W:addMarker(markerType, x, z, npcId)
+    -- Don't duplicate: check if same type exists nearby recently
+    for _, m in ipairs(self.markers) do
+        if m.type == markerType and m.strength > 50
+           and math.abs(m.x - x) + math.abs(m.z - z) <= 3 then
+            m.strength = 100  -- refresh existing marker
+            return
+        end
+    end
+    self.markers[#self.markers + 1] = {
+        type = markerType, x = x, z = z,
+        createdBy = npcId, createdAt = self.time,
+        strength = 100,
+    }
+end
+
+function W:getMarkersNear(cx, cz, radius, markerType)
+    local result = {}
+    local r2 = radius * radius
+    for _, m in ipairs(self.markers) do
+        if (not markerType or m.type == markerType) and m.strength > 0 then
+            if (m.x - cx)^2 + (m.z - cz)^2 <= r2 then
+                result[#result + 1] = m
+            end
+        end
+    end
+    return result
 end
 
 return W

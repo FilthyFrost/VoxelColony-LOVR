@@ -281,6 +281,15 @@ function lovr.draw(pass)
         pass:setMaterial()
     end
 
+    -- Communication markers (ground circles)
+    for _, m in ipairs(world.markers) do
+        local alpha = m.strength / 100 * 0.25
+        if m.type == "food_here" then pass:setColor(0.2, 0.8, 0.2, alpha)
+        elseif m.type == "help_needed" then pass:setColor(0.9, 0.7, 0.1, alpha)
+        elseif m.type == "home_here" then pass:setColor(0.3, 0.5, 0.9, alpha) end
+        pass:circle(m.x, 0.04, m.z, 1.5, math.pi / 2, 1, 0, 0)
+    end
+
     -- NPCs
     for _, npc in ipairs(npcs) do
         drawNPC(pass, npc, dl)
