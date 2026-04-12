@@ -27,6 +27,7 @@ local THOUGHT_MAP = {
     need_wall      = {icon = "brick",  text = "Need walls!"},
     need_roof      = {icon = "roof",   text = "Need roof!"},
     need_food      = {icon = "apple",  text = "Need food!"},
+    socialize      = {icon = "chat",   text = "Let's chat!"},
     sleep          = {icon = "bed",    text = "Sleepy..."},
     sleeping       = {icon = "zzz",    text = "Zzz"},
     sleep_exhausted= {icon = "zzz",    text = "So tired!"},
@@ -73,6 +74,12 @@ function NPC.new(config, world, items, startX, startZ, allNpcs)
     self.sleeping = false
     self.sleepPos = nil        -- {x, z} for rendering
     self.sleepQuality = 0      -- 0=ground, 1=indoor, 2=bed
+
+    -- Social
+    self.socialNeed = 80
+    self.relationships = {}    -- {[otherNpcId] = {affinity, interactions, lastTime, proximityTimer}}
+    self.chatTarget = nil
+    self.chatTimer = 0
 
     -- Desires
     self.comfort = 0
@@ -226,6 +233,9 @@ function NPC:update(dt)
         end
     end
 
+    -- Social relationships
+    self:_updateRelationships(dt)
+
     if self.thoughtTimer > 0 then self.thoughtTimer = self.thoughtTimer - dt end
     self:_updateMood()
 
@@ -268,6 +278,7 @@ function NPC:_think()
         {name = "furnish_home",   score = self:_scoreFurnishHome()},
         {name = "build_bigger",   score = self:_scoreBuildBigger()},
         {name = "sleep",          score = self:_scoreSleep()},
+        {name = "socialize",      score = self:_scoreSocialize()},
     }
     for _, c in ipairs(candidates) do c.score = c.score + math.random() * 2 end
     local best = candidates[1]
@@ -412,6 +423,69 @@ function NPC:_findBed()
 end
 
 ----------------------------------------------------------------------------
+-- SOCIAL RELATIONSHIPS
+----------------------------------------------------------------------------
+function NPC:_getRelation(otherNpc)
+    local id = otherNpc.npcId
+    if not self.relationships[id] then
+        self.relationships[id] = {
+            affinity = 20, interactions = 0,
+            lastTime = self.world.time, proximityTimer = 0,
+        }
+    end
+    return self.relationships[id]
+end
+
+function NPC:_getRelationType(otherNpc)
+    local rel = self:_getRelation(otherNpc)
+    if rel.affinity >= self.cfg.AFFINITY_PARTNER then return "partner"
+    elseif rel.affinity >= self.cfg.AFFINITY_CLOSE_FRIEND then return "close_friend"
+    elseif rel.affinity >= self.cfg.AFFINITY_FRIEND then return "friend"
+    elseif rel.affinity >= self.cfg.AFFINITY_ACQUAINTANCE then return "acquaintance"
+    else return "stranger" end
+end
+
+function NPC:_updateRelationships(dt)
+    self.socialNeed = math.max(0, self.socialNeed - self.cfg.SOCIAL_DECAY * dt)
+    for _, other in ipairs(self.allNpcs) do
+        if other ~= self and not other.dead then
+            local rel = self:_getRelation(other)
+            local dist = math.abs(self.gx - other.gx) + math.abs(self.gz - other.gz)
+            if dist <= self.cfg.AFFINITY_PROXIMITY_RANGE then
+                rel.proximityTimer = (rel.proximityTimer or 0) + dt
+                if rel.proximityTimer >= self.cfg.AFFINITY_PROXIMITY_TIME then
+                    rel.proximityTimer = 0
+                    rel.affinity = math.min(100, rel.affinity + self.cfg.AFFINITY_PROXIMITY_BONUS)
+                end
+                rel.lastTime = self.world.time
+            end
+            if self.world.time - rel.lastTime > self.cfg.AFFINITY_DECAY_TIME then
+                rel.affinity = math.max(0, rel.affinity - self.cfg.AFFINITY_DECAY_RATE * dt)
+            end
+        end
+    end
+end
+
+function NPC:_scoreSocialize()
+    if self.sleeping then return 0 end
+    if self.chatTarget then return 0 end
+    local socialR = self.socialNeed / self.cfg.SOCIAL_MAX
+    local urgency = 1 / (1 + math.exp(-10 * (1 - socialR - 0.6)))
+    local base = urgency * 60
+    local hasTarget = false
+    for _, other in ipairs(self.allNpcs) do
+        if other ~= self and not other.dead and not other.sleeping then
+            local dist = math.abs(self.gx - other.gx) + math.abs(self.gz - other.gz)
+            if dist <= 15 then hasTarget = true; break end
+        end
+    end
+    if not hasTarget then return 0 end
+    if self.traits.social then base = base * 1.5 end
+    if self.traits.shy then base = base * 0.4 end
+    return base
+end
+
+----------------------------------------------------------------------------
 -- DECISIONS
 ----------------------------------------------------------------------------
 function NPC:_executeDecision(name)
@@ -435,6 +509,24 @@ function NPC:_executeDecision(name)
         self:_execBuildBigger()
     elseif name == "sleep" then
         self:_execSleep()
+    elseif name == "socialize" then
+        self:_execSocialize()
+    end
+end
+
+function NPC:_execSocialize()
+    local bestDist = math.huge
+    local bestNpc = nil
+    for _, other in ipairs(self.allNpcs) do
+        if other ~= self and not other.dead and not other.sleeping and not other.chatTarget then
+            local dist = math.abs(self.gx - other.gx) + math.abs(self.gz - other.gz)
+            local rel = self:_getRelation(other)
+            local bonus = rel.affinity >= 50 and -5 or 0
+            if dist + bonus < bestDist then bestDist = dist + bonus; bestNpc = other end
+        end
+    end
+    if bestNpc then
+        self.task = {type = "socialize", target = bestNpc, timer = 0}
     end
 end
 
@@ -618,6 +710,7 @@ function NPC:_executeTask(dt)
     elseif t == "go_home" then     self:_doGoHome(dt)
     elseif t == "stockpile" then   self:_doStockpile(dt)
     elseif t == "go_sleep" then    self:_doGoSleep(dt)
+    elseif t == "socialize" then   self:_doSocialize(dt)
     end
 end
 
@@ -675,6 +768,20 @@ function NPC:_doPlaceBlock(dt)
         end
         if self.task.step.action == "place_furniture" then
             self.comfort = math.min(self.cfg.COMFORT_MAX, self.comfort + self.cfg.COMFORT_FURNITURE_BONUS)
+        end
+        -- Cooperative building affinity bonus
+        local cbp = self.helpingBlueprint or self.blueprint
+        if cbp then
+            for _, other in ipairs(self.allNpcs) do
+                if other ~= self and not other.dead then
+                    local obp = other.helpingBlueprint or other.blueprint
+                    if obp == cbp then
+                        local rel = self:_getRelation(other)
+                        rel.affinity = math.min(100, rel.affinity + self.cfg.AFFINITY_COOP_BONUS)
+                        rel.interactions = rel.interactions + 1
+                    end
+                end
+            end
         end
         self.path = nil
         self:_completeTask()
@@ -770,6 +877,41 @@ function NPC:_doGoSleep(dt)
         self.task = nil
     else
         self:_moveTo(tgt.x, 0, tgt.z, dt)
+    end
+end
+
+function NPC:_doSocialize(dt)
+    local other = self.task.target
+    if other.dead or other.sleeping then self:_completeTask(); return end
+    local dist = math.abs(self.gx - other.gx) + math.abs(self.gz - other.gz)
+    if dist <= 2 then
+        if not self.chatTarget then
+            self.chatTarget = other
+            self.chatTimer = self.cfg.SOCIAL_CHAT_DURATION
+            other.lookAtX = self.gx
+            other.lookAtZ = self.gz
+            self.lookAtX = other.gx
+            self.lookAtZ = other.gz
+        end
+        self.chatTimer = self.chatTimer - dt
+        if self.chatTimer <= 0 then
+            self.socialNeed = math.min(self.cfg.SOCIAL_MAX, self.socialNeed + self.cfg.SOCIAL_CHAT_RESTORE)
+            if other.socialNeed then
+                other.socialNeed = math.min(self.cfg.SOCIAL_MAX, other.socialNeed + self.cfg.SOCIAL_CHAT_RESTORE)
+            end
+            local rel = self:_getRelation(other)
+            rel.affinity = math.min(100, rel.affinity + self.cfg.SOCIAL_CHAT_AFFINITY)
+            rel.interactions = rel.interactions + 1
+            local otherRel = other:_getRelation(self)
+            otherRel.affinity = math.min(100, otherRel.affinity + self.cfg.SOCIAL_CHAT_AFFINITY)
+            otherRel.interactions = otherRel.interactions + 1
+            self.chatTarget = nil
+            other.lookAtX = nil; other.lookAtZ = nil
+            self.lookAtX = nil; self.lookAtZ = nil
+            self:_completeTask()
+        end
+    else
+        self:_moveTo(other.gx, 0, other.gz, dt)
     end
 end
 
@@ -953,8 +1095,23 @@ end
 function NPC:getMood() return self.mood end
 
 function NPC:_hasShelter()
-    return self.blueprint and self.blueprint.completed and self.shelterVerified
-        and self.world:hasRoof(math.floor(self.homeX + 0.5), math.floor(self.homeZ + 0.5))
+    -- Own shelter
+    if self.blueprint and self.blueprint.completed and self.shelterVerified
+       and self.world:hasRoof(math.floor(self.homeX + 0.5), math.floor(self.homeZ + 0.5)) then
+        return true
+    end
+    -- Close friend's shelter (affinity >= CLOSE_FRIEND)
+    for _, other in ipairs(self.allNpcs) do
+        if other ~= self and not other.dead then
+            local rel = self:_getRelation(other)
+            if rel.affinity >= self.cfg.AFFINITY_CLOSE_FRIEND then
+                if other.blueprint and other.blueprint.completed and other.shelterVerified then
+                    return true
+                end
+            end
+        end
+    end
+    return false
 end
 
 function NPC:_findFood()

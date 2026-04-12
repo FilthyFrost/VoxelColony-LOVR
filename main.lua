@@ -422,6 +422,23 @@ function drawNPC(pass, npc, dl)
         pass:setMaterial()
     end
 
+    -- Chat bubble (when socializing)
+    if npc.chatTarget and not npc.dead then
+        if math.floor(gameTime * 2) % 2 == 0 then
+            local toCamX2 = cam.x - x
+            local toCamZ2 = cam.z - z
+            local chatAngle = math.atan2(toCamX2, toCamZ2)
+            pass:push()
+            pass:translate(x, baseY + 1.9, z)
+            pass:rotate(chatAngle, 0, 1, 0)
+            pass:setColor(1, 1, 0.8, 0.85)
+            pass:box(0, 0, 0, 0.4, 0.18, 0.02)
+            pass:setColor(0.2, 0.2, 0.2)
+            pass:text("...", 0, 0, -0.01, 0.1)
+            pass:pop()
+        end
+    end
+
     -- Thought bubble (billboard)
     local thought = npc:getThought()
     if thought and not npc.dead then
@@ -515,7 +532,8 @@ function drawHUD(pass)
             elseif label == "place_block" then label = "place"
             elseif label == "break_block" then label = "break"
             elseif label == "fetch_eat" then label = "eat"
-            elseif label == "go_sleep" then label = "sleep" end
+            elseif label == "go_sleep" then label = "sleep"
+            elseif label == "socialize" then label = "chat" end
             if npc.sleeping then label = "Zzz" end
 
             local displayName = npc.name or ("NPC" .. i)

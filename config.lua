@@ -72,4 +72,23 @@ C.STAMINA_EXHAUSTED = 10            -- below: forced collapse (RimWorld threshol
 C.STAMINA_WAKEUP = 90               -- above: wake up naturally
 C.STAMINA_HUNGRY_WAKEUP = 15        -- hunger below: wake up hungry
 
+-- Social / Relationship system
+C.SOCIAL_MAX = 100
+C.SOCIAL_DECAY = 0.03               -- social need decay per second
+C.SOCIAL_CHAT_DURATION = 3.0        -- seconds to chat
+C.SOCIAL_CHAT_RESTORE = 15          -- social need restored per chat
+C.SOCIAL_CHAT_AFFINITY = 2          -- affinity gained per chat
+
+C.AFFINITY_PROXIMITY_TIME = 30      -- seconds near each other to gain affinity
+C.AFFINITY_PROXIMITY_BONUS = 1      -- affinity gained
+C.AFFINITY_PROXIMITY_RANGE = 5      -- detection range
+C.AFFINITY_COOP_BONUS = 3           -- affinity from cooperative building
+C.AFFINITY_DECAY_TIME = 300         -- seconds apart before decay
+C.AFFINITY_DECAY_RATE = 0.01        -- decay per second after threshold
+
+C.AFFINITY_ACQUAINTANCE = 30
+C.AFFINITY_FRIEND = 50
+C.AFFINITY_CLOSE_FRIEND = 70        -- can share shelter
+C.AFFINITY_PARTNER = 90
+
 return C
