@@ -151,11 +151,26 @@ function lovr.load()
     mouse.setRelativeMode(true)
 end
 
+-- Crash log: write state to file every second so we can see what happened before crash
+local crashLog = io.open("/tmp/lovr_crash.log", "w")
+if crashLog then crashLog:write("=== Game started ===\n"); crashLog:close() end
+local lastCrashLog = 0
+
+local function writeCrashState(msg)
+    local f = io.open("/tmp/lovr_crash.log", "a")
+    if f then
+        f:write(string.format("[%.1fs] %s | npcs:%d blocks:%d falling:%d markers:%d\n",
+            gameTime, msg, #npcs, #world.blocks, #fallingItems, #world.markers))
+        f:close()
+    end
+end
+
 -- Auto-test
 local autoTestDone = false
 local autoTestTimer = 2
 
 function lovr.update(dt)
+    local ok, err = pcall(function()
     gameTime = gameTime + dt
     world:update(dt)
 
@@ -199,6 +214,18 @@ function lovr.update(dt)
 
     for _, npc in ipairs(npcs) do npc:update(dt) end
     cam:update(dt)
+
+    -- Crash log: periodic state dump
+    if gameTime - lastCrashLog >= 2 then
+        lastCrashLog = gameTime
+        local aliveNpcs = 0
+        for _, n in ipairs(npcs) do if not n.dead then aliveNpcs = aliveNpcs + 1 end end
+        writeCrashState(string.format("TICK alive:%d", aliveNpcs))
+    end
+    end) -- pcall
+    if not ok then
+        writeCrashState("UPDATE ERROR: " .. tostring(err))
+    end
 end
 
 ----------------------------------------------------------------------------
@@ -588,6 +615,7 @@ end
 -- INPUT
 ----------------------------------------------------------------------------
 function lovr.keypressed(key)
+    writeCrashState("KEY:" .. key)
     if key == "escape" then
         if cam.followNPC then
             cam.followNPC = nil
@@ -643,6 +671,7 @@ function lovr.wheelmoved(x, y)
 end
 
 function lovr.mousepressed(mx, my, button)
+    writeCrashState(string.format("CLICK btn:%d at:%.0f,%.0f", button, mx, my))
     local w, h = lovr.system.getWindowDimensions()
     if button == 1 then
         local bx, by = w / 2, h - 40
@@ -667,6 +696,7 @@ end
 function dropItem()
     local gx, gz = cam:getLookTarget()
     if not gx then return end
+    writeCrashState(string.format("DROP %s at:%d,%d falling:%d", Items.panel_order[selectedIdx], gx, gz, #fallingItems))
     local itemType = Items.panel_order[selectedIdx]
     -- Find highest occupied Y including blocks already in the world
     local topY = -1
