@@ -273,11 +273,16 @@ function NPC:update(dt)
         end
     end
 
-    -- Social relationships
-    self:_updateRelationships(dt)
-
-    -- Desperation
-    self:_updateDesperation()
+    -- Social relationships (throttled: every 1 second, not every frame)
+    self.socialTimer = (self.socialTimer or 0) - dt
+    if self.socialTimer <= 0 then
+        self:_updateRelationships(1.0)  -- pass accumulated dt
+        self:_updateDesperation()
+        self.socialTimer = 1.0
+    else
+        -- Still decay social need every frame (cheap)
+        self.socialNeed = math.max(0, self.socialNeed - self.cfg.SOCIAL_DECAY * dt)
+    end
 
     if self.thoughtTimer > 0 then self.thoughtTimer = self.thoughtTimer - dt end
     self:_updateMood()
@@ -524,7 +529,6 @@ function NPC:_getRelationType(otherNpc)
 end
 
 function NPC:_updateRelationships(dt)
-    self.socialNeed = math.max(0, self.socialNeed - self.cfg.SOCIAL_DECAY * dt)
     for _, other in ipairs(self.allNpcs) do
         if other ~= self and not other.dead then
             local rel = self:_getRelation(other)

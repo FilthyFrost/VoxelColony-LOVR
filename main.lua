@@ -251,20 +251,17 @@ function lovr.draw(pass)
             end
             pass:setMaterial()
 
-            -- Floating label for loose blocks
+            -- Floating label for loose blocks (only nearest ones to camera)
             if b.state == "loose" then
-                local lx, lz = b.gx, b.gz
-                local ly = b.gy + 1.1
-                local toCamX = cam.x - lx
-                local toCamZ = cam.z - lz
+                local toCamX = cam.x - b.gx
+                local toCamZ = cam.z - b.gz
                 local dist2 = toCamX * toCamX + toCamZ * toCamZ
-                if dist2 < 144 then
+                if dist2 < 64 then  -- within 8 blocks only
                     local angle = math.atan2(toCamX, toCamZ)
                     pass:push()
-                    pass:translate(lx, ly, lz)
+                    pass:translate(b.gx, b.gy + 1.1, b.gz)
                     pass:rotate(angle, 0, 1, 0)
-                    -- Use English item type name (safe for default font)
-                    pass:setColor(1, 1, 1, 0.75)
+                    pass:setColor(1, 1, 1, 0.7)
                     pass:text(b.itemType, 0, 0, 0, 0.08)
                     pass:pop()
                 end
@@ -281,13 +278,17 @@ function lovr.draw(pass)
         pass:setMaterial()
     end
 
-    -- Communication markers (ground circles)
+    -- Communication markers (ground circles, only near camera)
     for _, m in ipairs(world.markers) do
-        local alpha = m.strength / 100 * 0.25
-        if m.type == "food_here" then pass:setColor(0.2, 0.8, 0.2, alpha)
-        elseif m.type == "help_needed" then pass:setColor(0.9, 0.7, 0.1, alpha)
-        elseif m.type == "home_here" then pass:setColor(0.3, 0.5, 0.9, alpha) end
-        pass:circle(m.x, 0.04, m.z, 1.5, math.pi / 2, 1, 0, 0)
+        local dx = cam.x - m.x
+        local dz = cam.z - m.z
+        if dx * dx + dz * dz < 400 then  -- within 20 blocks
+            local alpha = m.strength / 100 * 0.25
+            if m.type == "food_here" then pass:setColor(0.2, 0.8, 0.2, alpha)
+            elseif m.type == "help_needed" then pass:setColor(0.9, 0.7, 0.1, alpha)
+            elseif m.type == "home_here" then pass:setColor(0.3, 0.5, 0.9, alpha) end
+            pass:circle(m.x, 0.04, m.z, 1.5, math.pi / 2, 1, 0, 0)
+        end
     end
 
     -- NPCs
@@ -494,11 +495,9 @@ function drawHUD(pass)
     local w, h = lovr.system.getWindowDimensions()
     pass:setViewPose(1, lovr.math.mat4())
     pass:setProjection(1, lovr.math.mat4():orthographic(0, w, h, 0, -10, 10))
-    -- Calculate scale: default font renders at fh units per scale=1.0
-    -- To get N-pixel text in our orthographic projection: scale = N / fh
-    local font = lovr.graphics.getDefaultFont()
-    local fh = font:getHeight()
-    local function px(targetPixels) return targetPixels / fh end
+    -- px() converts target pixel height to font scale
+    -- Cached: default font height is always 1.0 so px(N) = N
+    local function px(n) return n end
 
     local selName = Items.panel_order[selectedIdx]
     local sel = Items.get(selName)
