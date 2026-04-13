@@ -95,7 +95,13 @@ function TL.toBlueprint(tmpl, homeX, homeZ, npc)
             goto nextBlock
         end
 
-        local blockType = slotMap[b.slot] or slotMap.primary or "wall"
+        -- Use direct material type from template (t field) or fall back to slot system
+        local blockType
+        if b.t then
+            blockType = b.t  -- direct: "wall", "wood", "roof", "glass"
+        else
+            blockType = slotMap[b.slot] or slotMap.primary or "wall"
+        end
         steps[#steps + 1] = {
             action = "place",
             x = wx, y = wy, z = wz,

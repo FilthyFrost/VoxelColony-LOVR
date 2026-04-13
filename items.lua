@@ -18,6 +18,25 @@ Items.registry = {
 
     -- Food
     apple  = { label = "苹果",   category = "food",      nutrition = 40,            color = {0.80, 0.20, 0.10} },
+
+    -- Extended block types (for schematic buildings)
+    cobblestone       = { label = "cobble",  category = "building", building_type = "wall",  color = {0.50, 0.50, 0.48} },
+    stone_bricks      = { label = "s.brick", category = "building", building_type = "wall",  color = {0.55, 0.55, 0.53} },
+    spruce_planks     = { label = "s.plank", category = "building", building_type = "wall",  color = {0.38, 0.25, 0.14} },
+    spruce_log        = { label = "s.log",   category = "building", building_type = "wall",  color = {0.30, 0.18, 0.10} },
+    stripped_spruce_log = { label = "str.log", category = "building", building_type = "wall", color = {0.50, 0.35, 0.20} },
+    oak_planks        = { label = "o.plank", category = "building", building_type = "wall",  color = {0.60, 0.45, 0.25} },
+    dark_oak_planks   = { label = "d.plank", category = "building", building_type = "wall",  color = {0.28, 0.18, 0.08} },
+    oak_log           = { label = "o.log",   category = "building", building_type = "wall",  color = {0.42, 0.30, 0.16} },
+    fence             = { label = "fence",   category = "building", building_type = "wall",  color = {0.52, 0.38, 0.20} },
+    trapdoor          = { label = "trap",    category = "building", building_type = "wall",  color = {0.45, 0.32, 0.17} },
+    leaves            = { label = "leaves",  category = "building", building_type = "wall",  color = {0.20, 0.45, 0.15} },
+    glass_pane        = { label = "g.pane",  category = "building", building_type = "wall",  color = {0.75, 0.88, 0.95}, transparent = true },
+    oak_slab          = { label = "o.slab",  category = "building", building_type = "roof",  color = {0.58, 0.42, 0.22} },
+    spruce_slab       = { label = "s.slab",  category = "building", building_type = "roof",  color = {0.36, 0.24, 0.13} },
+    cobblestone_wall  = { label = "c.wall",  category = "building", building_type = "wall",  color = {0.50, 0.50, 0.48} },
+    bookshelf         = { label = "books",   category = "building", building_type = "wall",  color = {0.55, 0.38, 0.20} },
+    crafting_table    = { label = "craft",   category = "building", building_type = "wall",  color = {0.55, 0.40, 0.22} },
 }
 
 -- Ordered list for UI carousel

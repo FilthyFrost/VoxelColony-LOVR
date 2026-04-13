@@ -663,34 +663,36 @@ function NPC:_execHelpBuild()
     end
 end
 
+-- TEST MODE: all NPCs build one shared Small Survival House, all-stone
+local sharedTestBlueprint = nil
+
 function NPC:_execBuildShelter()
     if not self.blueprint then
-        -- Don't create blueprint if no building materials exist yet
         local totalMats = (self.resourceCache["wall"] or 0) + (self.resourceCache["wood"] or 0)
             + (self.resourceCache["roof"] or 0) + (self.resourceCache["glass"] or 0)
-        if totalMats < 5 then return end  -- wait for materials
+        if totalMats < 5 then return end
 
-        -- Try template-based building first
-        local tmpl = TemplateLib.chooseBest(self, self.resourceCache)
-        if tmpl then
-            self.blueprint = TemplateLib.toBlueprint(tmpl, self.homeX, self.homeZ, self)
-            log.write("build", "%s chose template '%s' (%dx%d) style:%s+%s",
-                self.name, tmpl.name, tmpl.w, tmpl.d,
-                self.buildStyle and self.buildStyle.primary or "?",
-                self.buildStyle and self.buildStyle.secondary or "?")
-        else
-            -- Fallback: old dynamic room generator
-            local options = Blueprint.chooseBlueprintSize(self.resourceCache, self.cfg)
-            if self.allNpcs then
-                local bp, hx, hz = Blueprint.findAdjacentSlot(self.allNpcs, self.cfg, options.w, options.d)
-                if bp then self.blueprint = bp; self.homeX, self.homeZ = hx, hz end
+        -- TEST: all NPCs share one blueprint
+        if not sharedTestBlueprint then
+            -- Force "Small Survival House" template, all stone
+            for _, tmpl in ipairs(TemplateLib.all) do
+                if tmpl.name:find("Survival") then
+                    self.buildStyle = {primary = "wall", secondary = "wall"}  -- all stone
+                    local cx = math.floor(self.cfg.GRID / 2)
+                    local cz = math.floor(self.cfg.GRID / 2)
+                    sharedTestBlueprint = TemplateLib.toBlueprint(tmpl, cx, cz, self)
+                    log.write("build", "CREATED shared blueprint: %s at (%d,%d) steps:%d",
+                        tmpl.name, cx, cz, #sharedTestBlueprint.steps)
+                    break
+                end
             end
-            if not self.blueprint then
-                self.blueprint = Blueprint.generateDynamicRoom(self.homeX, self.homeZ, self.cfg, options)
-            end
-            log.write("build", "%s using fallback dynamic room (mats:%d)", self.name,
-                (self.resourceCache["wall"] or 0) + (self.resourceCache["wood"] or 0) +
-                (self.resourceCache["roof"] or 0) + (self.resourceCache["glass"] or 0))
+        end
+
+        if sharedTestBlueprint then
+            self.blueprint = sharedTestBlueprint
+            self.homeX = sharedTestBlueprint.homeX
+            self.homeZ = sharedTestBlueprint.homeZ
+            log.write("build", "%s joined shared build (%d steps)", self.name, #sharedTestBlueprint.steps)
         end
     end
     self:_pushBuildTask()

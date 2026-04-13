@@ -124,6 +124,68 @@ def classify_block_name(name):
     return "primary"
 
 
+def classify_block_to_material(name):
+    """Map Minecraft block to specific block type matching our textures.
+    Returns the exact texture key used in textures.lua loadAll()."""
+    name = name.lower()
+    if "air" in name: return None
+    if "water" in name or "lava" in name: return None
+    # Skip
+    for skip in ["flower","tulip","poppy","cornflower","carpet","button","pressure",
+                  "lever","sign","banner","painting","torch","lantern","campfire",
+                  "vine","sugar_cane","wheat","potted","brewing","grindstone",
+                  "stonecutter","bell","cobweb","bed","chest","barrel"]:
+        if skip in name: return None
+    if "door" in name and "trapdoor" not in name: return "door"
+    # Skip ground
+    for skip in ["dirt","grass_block","path","farmland"]:
+        if skip in name: return None
+
+    # Specific block type mapping (matches textures.lua keys)
+    if "glass_pane" in name or "stained_glass_pane" in name: return "glass_pane"
+    if "glass" in name: return "glass"
+
+    if "stripped_spruce" in name: return "stripped_spruce_log"
+    if "spruce_plank" in name: return "spruce_planks"
+    if "spruce_stair" in name or "spruce_slab" in name: return "spruce_slab"
+    if "spruce_trapdoor" in name: return "trapdoor"
+    if "spruce_fence" in name: return "fence"
+    if "spruce_log" in name: return "spruce_log"
+
+    if "dark_oak_plank" in name: return "dark_oak_planks"
+    if "dark_oak_stair" in name or "dark_oak_slab" in name: return "oak_slab"
+    if "dark_oak_trapdoor" in name: return "trapdoor"
+
+    if "oak_plank" in name: return "oak_planks"
+    if "oak_stair" in name or "oak_slab" in name: return "oak_slab"
+    if "oak_log" in name: return "oak_log"
+    if "oak_fence" in name: return "fence"
+
+    if "birch_leaves" in name or "leaves" in name: return "leaves"
+    if "bookshelf" in name: return "bookshelf"
+    if "crafting_table" in name: return "crafting_table"
+    if "ladder" in name: return "ladder"
+
+    if "stone_brick" in name: return "stone_bricks"
+    if "cobblestone_wall" in name: return "cobblestone_wall"
+    if "cobblestone_stair" in name: return "cobblestone"
+    if "cobblestone" in name: return "cobblestone"
+    if "mossy_cobblestone" in name: return "cobblestone"
+
+    if "sandstone" in name: return "wall"
+    if "stone" in name: return "wall"
+
+    # Fallback
+    if "fence" in name: return "fence"
+    if "trapdoor" in name: return "trapdoor"
+    if "stair" in name: return "oak_slab"
+    if "slab" in name: return "oak_slab"
+    if "log" in name or "wood" in name: return "oak_log"
+    if "plank" in name: return "oak_planks"
+
+    return "wall"
+
+
 def parse_schematic(filepath):
     """Parse a .schematic NBT file (classic or Sponge v2 format)."""
     nbt = NBTFile(filepath, "rb")
@@ -154,11 +216,17 @@ def parse_schematic(filepath):
                     if block_id in DOOR_IDS:
                         if door_pos is None: door_pos = (x, 0, z)
                         continue
-                    slot = BLOCK_MAP.get(block_id)
-                    if slot is None:
-                        slot = "primary" if block_id < 256 else None
-                    if slot:
-                        blocks.append((x, y, z, slot))
+                    # Map classic block IDs to direct material types
+                    mat = None
+                    if block_id in (1,4,45,48,98,109,139,159): mat = "wall"      # stone types
+                    elif block_id in (5,17,47,53,85,96,126,134,135,136,162,163,164): mat = "wood"  # wood types
+                    elif block_id in (44,67,108,114,128,43): mat = "roof"         # stairs/slabs
+                    elif block_id in (20,102,160): mat = "glass"                  # glass types
+                    elif block_id in (2,3,12,13): mat = None                      # dirt/sand skip
+                    elif block_id in (6,18,31,37,38,39,40,50,65,66,69,70,72,77,143,171): mat = None  # decoration
+                    elif block_id < 256: mat = "wall"                             # unknown solid → wall
+                    if mat:
+                        blocks.append((x, y, z, mat))
 
         print(f"  Block IDs used: {sorted(block_ids_used)}")
 
@@ -199,11 +267,11 @@ def parse_schematic(filepath):
                         if (byte & 0x80) == 0: break
 
                     bname = id_to_name.get(value, "")
-                    slot = classify_block_name(bname)
-                    if slot == "door":
+                    mat = classify_block_to_material(bname)
+                    if mat == "door":
                         if door_pos is None: door_pos = (x, 0, z)
-                    elif slot:
-                        blocks.append((x, y, z, slot))
+                    elif mat:
+                        blocks.append((x, y, z, mat))
 
     blocks.sort(key=lambda b: (b[1], b[2], b[0]))
 
@@ -295,8 +363,8 @@ def to_lua(data, name):
     lines.append(f'    tags = {{"community", "minecraft"}},')
     lines.append(f'    blocks = {{')
 
-    for x, y, z, slot in data['blocks']:
-        lines.append(f'        {{x={x},y={y},z={z},slot="{slot}"}},')
+    for x, y, z, mat in data['blocks']:
+        lines.append(f'        {{x={x},y={y},z={z},t="{mat}"}},')
 
     lines.append(f'    }}')
     lines.append(f'}}')

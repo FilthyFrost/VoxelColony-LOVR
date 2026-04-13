@@ -169,15 +169,34 @@ function lovr.load()
     TemplateLib.init()
     log.write("main", "Game loaded. GRID=%d templates:%d", Config.GRID, #TemplateLib.all)
 
-    cam.x = Config.GRID / 2
-    cam.y = 40
-    cam.z = Config.GRID / 2 - 20
-    cam.yaw = 0
-    cam.pitch = -0.6
-
-    -- Spawn 1 NPC
+    -- PRE-BUILD: place Small Survival House directly in world for visual inspection
     local cx = math.floor(Config.GRID / 2)
     local cz = math.floor(Config.GRID / 2)
+    for _, tmpl in ipairs(TemplateLib.all) do
+        if tmpl.name:find("Survival") then
+            local originX = cx - math.floor(tmpl.w / 2)
+            local originZ = cz - math.floor(tmpl.d / 2)
+            local placed = 0
+            for _, b in ipairs(tmpl.blocks) do
+                local wx = originX + b.x
+                local wz = originZ + b.z
+                local mat = b.t or "wall"  -- use direct material type
+                if world:addBlock(wx, b.y, wz, mat, "placed") then
+                    placed = placed + 1
+                end
+            end
+            log.write("main", "PRE-BUILT '%s' at (%d,%d): %d/%d blocks placed",
+                tmpl.name, originX, originZ, placed, #tmpl.blocks)
+            break
+        end
+    end
+
+    -- Camera: look down at the pre-built house
+    cam.x = cx
+    cam.y = 20
+    cam.z = cz - 15
+    cam.yaw = 0
+    cam.pitch = -0.5
     npcs[#npcs + 1] = NPC.new(Config, world, Items, cx, cz, npcs)
 
     lovr.graphics.setBackgroundColor(0.45, 0.65, 0.92)
@@ -216,14 +235,12 @@ function lovr.update(dt)
                     end
                 end
             end
-            -- Drop enough materials for community templates (~600 blocks)
-            -- All land at y=0 quickly (low delay values)
-            for i = 0, 249 do drop("wall", i * 0.02) end
-            for i = 0, 199 do drop("wood", 5 + i * 0.02) end
-            for i = 0, 99 do drop("roof", 9 + i * 0.02) end
-            for i = 0, 49 do drop("glass", 11 + i * 0.02) end
-            drop("door", 13); drop("bed", 13.1); drop("torch", 13.2); drop("chest", 13.3)
-            for i = 0, 14 do drop("apple", 14 + i * 0.1) end
+            -- Drop mixed materials for template building
+            for i = 0, 149 do drop("wall", i * 0.02) end
+            for i = 0, 249 do drop("wood", 3 + i * 0.02) end
+            for i = 0, 49 do drop("glass", 8 + i * 0.02) end
+            for i = 0, 49 do drop("roof", 9 + i * 0.02) end
+            for i = 0, 14 do drop("apple", 10 + i * 0.1) end
         end
     end
 
