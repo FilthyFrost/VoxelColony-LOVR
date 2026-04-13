@@ -173,7 +173,7 @@ function lovr.load()
     local cx = math.floor(Config.GRID / 2)
     local cz = math.floor(Config.GRID / 2)
     for _, tmpl in ipairs(TemplateLib.all) do
-        if tmpl.name:find("Survival") then
+        if tmpl.name:find("Armorer") then
             local originX = cx - math.floor(tmpl.w / 2)
             local originZ = cz - math.floor(tmpl.d / 2)
             local placed = 0
@@ -183,7 +183,7 @@ function lovr.load()
                 local mat = b.t or "wall"
                 local block = world:addBlock(wx, b.y, wz, mat, "placed")
                 if block then
-                    -- Store Minecraft block metadata for rendering
+                    block.noGravity = true  -- pre-built blocks don't fall
                     block.facing = b.f
                     block.half = b.h
                     block.shape = b.s

@@ -886,12 +886,15 @@ function NPC:_doPlaceBlock(dt)
         self.world:removeBlock(self.carriedBlock)
         self.carriedBlock = nil
         local placed = self.world:addBlock(tgt.x, tgt.y, tgt.z, self.task.step.need, "placed")
-        -- Copy block metadata (facing, half, shape) for non-cube rendering
-        if placed and self.task.step then
-            placed.facing = self.task.step.facing
-            placed.half = self.task.step.half
-            placed.shape = self.task.step.shape
-            placed.open = self.task.step.open
+        if placed then
+            placed.noGravity = true  -- NPC-placed blocks don't fall
+            -- Copy block metadata (facing, half, shape) for non-cube rendering
+            if self.task.step then
+                placed.facing = self.task.step.facing
+                placed.half = self.task.step.half
+                placed.shape = self.task.step.shape
+                placed.open = self.task.step.open
+            end
         end
         if not placed then
             -- Target still occupied — recover the block as loose nearby

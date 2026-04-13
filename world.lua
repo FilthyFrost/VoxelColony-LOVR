@@ -44,7 +44,7 @@ function W:update(dt)
             local fell = false
             for i = #self.blocks, 1, -1 do
                 local b = self.blocks[i]
-                if b.gy > 0 and (b.state == "placed" or b.state == "loose") then
+                if b.gy > 0 and (b.state == "placed" or b.state == "loose") and not b.noGravity then
                     local belowKey = self:_key(b.gx, b.gy - 1, b.gz)
                     if not self.occupied[belowKey] then
                         local oldKey = self:_key(b.gx, b.gy, b.gz)
