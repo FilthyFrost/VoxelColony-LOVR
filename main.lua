@@ -187,7 +187,7 @@ end
 
 -- Auto-test
 local autoTestDone = false
-local autoTestTimer = 2
+local autoTestTimer = 0.1  -- drop materials almost immediately
 
 function lovr.update(dt)
     local ok, err = pcall(function()
@@ -205,9 +205,9 @@ function lovr.update(dt)
             local cz = math.floor(Config.GRID / 2)
             local used = {}
             local function drop(itemType, delay)
-                for _ = 0, 50 do
-                    local gx = cx + math.random(-7, 7)
-                    local gz = cz + math.random(-7, 7)
+                for _ = 0, 100 do
+                    local gx = cx + math.random(-15, 15)
+                    local gz = cz + math.random(-15, 15)
                     local k = gx .. "," .. gz
                     if not used[k] then
                         used[k] = true
@@ -216,10 +216,14 @@ function lovr.update(dt)
                     end
                 end
             end
-            for i = 0, 35 do drop("wall", i * 0.12) end
-            for i = 0, 24 do drop("roof", 5 + i * 0.12) end
-            drop("door", 9); drop("bed", 9.1); drop("torch", 9.2); drop("chest", 9.3)
-            for i = 0, 7 do drop("apple", 10 + i * 0.2) end
+            -- Drop enough materials for community templates (~600 blocks)
+            -- All land at y=0 quickly (low delay values)
+            for i = 0, 249 do drop("wall", i * 0.02) end
+            for i = 0, 199 do drop("wood", 5 + i * 0.02) end
+            for i = 0, 99 do drop("roof", 9 + i * 0.02) end
+            for i = 0, 49 do drop("glass", 11 + i * 0.02) end
+            drop("door", 13); drop("bed", 13.1); drop("torch", 13.2); drop("chest", 13.3)
+            for i = 0, 14 do drop("apple", 14 + i * 0.1) end
         end
     end
 

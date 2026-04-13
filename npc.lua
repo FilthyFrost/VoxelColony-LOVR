@@ -140,7 +140,7 @@ function NPC.new(config, world, items, startX, startZ, allNpcs)
     -- Task
     self.task = nil
     self.stepTimer = 0
-    self.thinkTimer = math.random() * 2  -- stagger so NPCs don't all think same frame
+    self.thinkTimer = 3 + math.random() * 2  -- wait for materials to land before first think
 
     return self
 end
@@ -688,7 +688,9 @@ function NPC:_execBuildShelter()
             if not self.blueprint then
                 self.blueprint = Blueprint.generateDynamicRoom(self.homeX, self.homeZ, self.cfg, options)
             end
-            log.write("build", "%s using fallback dynamic room", self.name)
+            log.write("build", "%s using fallback dynamic room (mats:%d)", self.name,
+                (self.resourceCache["wall"] or 0) + (self.resourceCache["wood"] or 0) +
+                (self.resourceCache["roof"] or 0) + (self.resourceCache["glass"] or 0))
         end
     end
     self:_pushBuildTask()
