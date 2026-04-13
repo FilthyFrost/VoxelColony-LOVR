@@ -205,9 +205,12 @@ function NPC:update(dt)
         self.y = self.y + (self.gy - self.y) * spd
         self.z = self.z + (self.gz - self.z) * spd
 
-        -- Wake up conditions
-        if self.stamina >= self.cfg.STAMINA_WAKEUP
-           or self.hunger < self.cfg.STAMINA_HUNGRY_WAKEUP then
+        -- Wake up conditions:
+        -- 1. Stamina full  2. Hungry  3. Daytime (don't sleep through the day)
+        local shouldWake = self.stamina >= self.cfg.STAMINA_WAKEUP
+            or self.hunger < self.cfg.STAMINA_HUNGRY_WAKEUP
+            or (not self.world.isNight and self.stamina > self.cfg.STAMINA_TIRED)
+        if shouldWake then
             self.sleeping = false
             self.sleepPos = nil
             self.task = nil
@@ -399,10 +402,11 @@ function NPC:_scoreEat()
 end
 
 function NPC:_scoreGoHome()
+    -- Night = go home AND sleep (merged behavior)
     if not self.world.isNight then return 0 end
     if not self:_hasShelter() then return 0 end
-    if self:_adjacentTo(self.homeX, self.homeZ) then return 0 end
-    local base = 60
+    if self.sleeping then return 0 end
+    local base = 75  -- high priority: nighttime = go home to sleep
     if self.traits.shy then base = base * 1.3 end
     return base
 end
@@ -445,7 +449,12 @@ function NPC:_scoreSleep()
     -- Sigmoid response curve: urgency spikes sharply below 30% stamina
     local urgency = 1 / (1 + math.exp(-12 * (1 - staminaR - 0.7)))
     local base = urgency * 95
-    if self.world.isNight then base = base + 15 end
+    -- Night: strong drive to sleep (even homeless NPC should sleep at night)
+    if self.world.isNight then
+        base = base + 40
+        -- Homeless NPC: sleep score must compete with other options
+        if not self:_hasShelter() then base = base + 10 end
+    end
     if self:_hasShelter() then base = base + 5 end
     return base
 end
@@ -466,14 +475,29 @@ function NPC:_findNearbyBed()
 end
 
 function NPC:_findBed()
-    local best, bestD2 = nil, math.huge
-    for _, b in ipairs(self.world.blocks) do
-        if b.itemType == "bed" and b.state == "placed" then
-            local d2 = (b.gx - self.gx)^2 + (b.gz - self.gz)^2
-            if d2 < bestD2 then best, bestD2 = b, d2 end
+    -- Priority 1: bed inside own home
+    local ownBed = self:_findNearbyBed()
+    if ownBed then return ownBed end
+
+    -- Priority 2: bed inside close friend's home
+    for _, other in ipairs(self.allNpcs) do
+        if other ~= self and not other.dead and other.blueprint then
+            local rel = self:_getRelation(other)
+            if rel.affinity >= self.cfg.AFFINITY_CLOSE_FRIEND then
+                local bp = other.blueprint
+                for _, b in ipairs(self.world.blocks) do
+                    if b.itemType == "bed" and b.state == "placed"
+                       and b.gx >= bp.originX and b.gx < bp.originX + bp.width
+                       and b.gz >= bp.originZ and b.gz < bp.originZ + bp.depth then
+                        return b
+                    end
+                end
+            end
         end
     end
-    return best
+
+    -- No accessible bed
+    return nil
 end
 
 ----------------------------------------------------------------------------
@@ -900,8 +924,25 @@ function NPC:_doFetchEat(dt)
 end
 
 function NPC:_doGoHome(dt)
-    if self:_adjacentTo(self.homeX, self.homeZ) then
-        self:_completeTask()
+    if self:_adjacentTo(self.homeX, self.homeZ) or (self.gx == self.homeX and self.gz == self.homeZ) then
+        -- Arrived home: go to sleep (night behavior)
+        if self.world.isNight then
+            self.sleeping = true
+            self.sleepPos = {x = self.gx, z = self.gz}
+            local bed = self:_findNearbyBed()
+            if bed then
+                self.sleepQuality = 2  -- bed
+            elseif self.world:hasRoof(self.gx, self.gz) then
+                self.sleepQuality = 1  -- indoor floor
+            else
+                self.sleepQuality = 0
+                self.outdoorSleepCount = self.outdoorSleepCount + 1
+            end
+            self:_setThought("sleeping")
+            self.task = nil
+        else
+            self:_completeTask()
+        end
     else
         self:_moveTo(self.homeX, 0, self.homeZ, dt)
     end
