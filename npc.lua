@@ -5,6 +5,7 @@
 
 local Blueprint = require("blueprint")
 local Pathfind = require("pathfind")
+local TemplateLib = require("templatelib")
 -- Safe log: try to use debuglog, fallback to no-op
 local log = {write = function() end}
 pcall(function() log = require("debuglog") end)
@@ -120,8 +121,8 @@ function NPC.new(config, world, items, startX, startZ, allNpcs)
     self.lookAtZ = nil
 
     -- Resources
-    self.resourceCache = {}
-    self.resourceCacheTimer = 0
+    self.resourceCache = world:countLooseByType()  -- initialize immediately
+    self.resourceCacheTimer = 3
 
     -- Pathfinding
     self.path = nil
@@ -664,13 +665,30 @@ end
 
 function NPC:_execBuildShelter()
     if not self.blueprint then
-        local options = Blueprint.chooseBlueprintSize(self.resourceCache, self.cfg)
-        if self.allNpcs then
-            local bp, hx, hz = Blueprint.findAdjacentSlot(self.allNpcs, self.cfg, options.w, options.d)
-            if bp then self.blueprint = bp; self.homeX, self.homeZ = hx, hz end
-        end
-        if not self.blueprint then
-            self.blueprint = Blueprint.generateDynamicRoom(self.homeX, self.homeZ, self.cfg, options)
+        -- Don't create blueprint if no building materials exist yet
+        local totalMats = (self.resourceCache["wall"] or 0) + (self.resourceCache["wood"] or 0)
+            + (self.resourceCache["roof"] or 0) + (self.resourceCache["glass"] or 0)
+        if totalMats < 5 then return end  -- wait for materials
+
+        -- Try template-based building first
+        local tmpl = TemplateLib.chooseBest(self, self.resourceCache)
+        if tmpl then
+            self.blueprint = TemplateLib.toBlueprint(tmpl, self.homeX, self.homeZ, self)
+            log.write("build", "%s chose template '%s' (%dx%d) style:%s+%s",
+                self.name, tmpl.name, tmpl.w, tmpl.d,
+                self.buildStyle and self.buildStyle.primary or "?",
+                self.buildStyle and self.buildStyle.secondary or "?")
+        else
+            -- Fallback: old dynamic room generator
+            local options = Blueprint.chooseBlueprintSize(self.resourceCache, self.cfg)
+            if self.allNpcs then
+                local bp, hx, hz = Blueprint.findAdjacentSlot(self.allNpcs, self.cfg, options.w, options.d)
+                if bp then self.blueprint = bp; self.homeX, self.homeZ = hx, hz end
+            end
+            if not self.blueprint then
+                self.blueprint = Blueprint.generateDynamicRoom(self.homeX, self.homeZ, self.cfg, options)
+            end
+            log.write("build", "%s using fallback dynamic room", self.name)
         end
     end
     self:_pushBuildTask()

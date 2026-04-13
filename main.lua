@@ -9,6 +9,7 @@ local NPC = require("npc")
 local Textures = require("textures")
 
 local mouse = require("mouse")
+local TemplateLib = require("templatelib")
 
 local world, npcs, fallingItems, tex, hudFont
 local selectedIdx = 1
@@ -165,7 +166,8 @@ function lovr.load()
     tex = Textures.loadAll()
 
     log.init()
-    log.write("main", "Game loaded. GRID=%d", Config.GRID)
+    TemplateLib.init()
+    log.write("main", "Game loaded. GRID=%d templates:%d", Config.GRID, #TemplateLib.all)
 
     cam.x = Config.GRID / 2
     cam.y = 40
