@@ -1,5 +1,8 @@
 -- world.lua — Voxel grid, day/night, spatial queries (LOVR: pure data, no scene nodes)
 
+local log = {write = function() end}
+pcall(function() log = require("debuglog") end)
+
 local W = {}
 W.__index = W
 
@@ -26,7 +29,10 @@ function W:update(dt)
         local b = self.blocks[i]
         if b.state == "placed" then
             b.dur = b.dur - dt
-            if b.dur <= 0 then self:_removeAt(i) end
+            if b.dur <= 0 then
+                log.write("world", "DECAY %s at:(%d,%d,%d)", b.itemType, b.gx, b.gy, b.gz)
+                self:_removeAt(i)
+            end
         end
     end
 

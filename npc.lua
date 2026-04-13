@@ -5,6 +5,9 @@
 
 local Blueprint = require("blueprint")
 local Pathfind = require("pathfind")
+-- Safe log: try to use debuglog, fallback to no-op
+local log = {write = function() end}
+pcall(function() log = require("debuglog") end)
 
 local NPC = {}
 NPC.__index = NPC
@@ -183,6 +186,7 @@ function NPC:update(dt)
                 end
             end
         end
+        log.write("npc", "%s DIED hp:%.0f hunger:%.0f temp:%.0f", self.name, self.hp, self.hunger, self.temperature)
         self.dead = true; return
     end
 
@@ -248,6 +252,7 @@ function NPC:update(dt)
             self.sleepQuality = 0
             self.outdoorSleepCount = self.outdoorSleepCount + 1
         end
+        log.write("npc", "%s COLLAPSED sta:%.0f at:(%d,%d) quality:%d", self.name, self.stamina, self.gx, self.gz, self.sleepQuality)
         self:_setThought("sleep_exhausted")
         return
     end
@@ -341,6 +346,9 @@ function NPC:_think()
         if candidates[i].score > best.score then best = candidates[i] end
     end
     if best.score > 0 then
+        log.write("npc", "%s think→%s(%.0f) pos:(%d,%d,%d) sta:%.0f hp:%.0f des:%.0f",
+            self.name, best.name, best.score, self.gx, self.gy, self.gz,
+            self.stamina, self.hp, self.desperation)
         self:_executeDecision(best.name)
         -- Show "demolishing" thought when tearing down
         local bp = self.helpingBlueprint or self.blueprint
@@ -1145,7 +1153,8 @@ function NPC:_doFighting(dt)
 end
 
 function NPC:_resolveCombat(attacker, defender)
-    -- Power based on stamina + random
+    log.write("combat", "%s vs %s | atk_hp:%.0f atk_sta:%.0f def_hp:%.0f def_sta:%.0f",
+        attacker.name, defender.name, attacker.hp, attacker.stamina, defender.hp, defender.stamina)
     local atkPower = attacker.stamina * 0.6 + math.random() * 30
     local defPower = defender.stamina * 0.6 + math.random() * 30
 

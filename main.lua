@@ -14,6 +14,36 @@ local world, npcs, fallingItems, tex, hudFont
 local selectedIdx = 1
 local gameTime = 0
 
+-- Debug logging system (must be before lovr.load)
+local log = {time = 0}
+function log.init()
+    for _, m in ipairs({"main","npc","build","combat","social","world","perf"}) do
+        local f = io.open("/tmp/lovr_" .. m .. ".log", "w")
+        if f then f:write("=== " .. m .. " ===\n"); f:close() end
+    end
+end
+function log.setTime(t) log.time = t end
+function log.write(m, fmt, ...)
+    local f = io.open("/tmp/lovr_" .. m .. ".log", "a")
+    if f then
+        local msg = select("#", ...) > 0 and string.format(fmt, ...) or fmt
+        f:write(string.format("[%.1fs] %s\n", log.time, msg))
+        f:close()
+    end
+end
+function log.summary(npcs, bc, fi, mc)
+    local a = 0; if npcs then for _, n in ipairs(npcs) do if not n.dead then a = a+1 end end end
+    log.write("main", "TICK alive:%d npcs:%d blocks:%d falling:%d markers:%d", a, npcs and #npcs or 0, bc or 0, fi and #fi or 0, mc or 0)
+end
+local _pf = {n=0, dt=0, last=0}
+function log.perfFrame(dt)
+    _pf.n = _pf.n+1; _pf.dt = _pf.dt+dt
+    if log.time - _pf.last >= 5 then
+        if _pf.n > 0 then log.write("perf", "fps:%.1f avg:%.1fms", _pf.n/_pf.dt, _pf.dt/_pf.n*1000) end
+        _pf.n=0; _pf.dt=0; _pf.last=log.time
+    end
+end
+
 ----------------------------------------------------------------------------
 -- CAMERA: Free-fly + Follow + Ant-Eye modes
 ----------------------------------------------------------------------------
@@ -134,7 +164,8 @@ function lovr.load()
     fallingItems = {}
     tex = Textures.loadAll()
 
-    -- No custom font needed — we compute scale dynamically in drawHUD
+    log.init()
+    log.write("main", "Game loaded. GRID=%d", Config.GRID)
 
     cam.x = Config.GRID / 2
     cam.y = 40
@@ -151,19 +182,6 @@ function lovr.load()
     mouse.setRelativeMode(true)
 end
 
--- Crash log: write state to file every second so we can see what happened before crash
-local crashLog = io.open("/tmp/lovr_crash.log", "w")
-if crashLog then crashLog:write("=== Game started ===\n"); crashLog:close() end
-local lastCrashLog = 0
-
-local function writeCrashState(msg)
-    local f = io.open("/tmp/lovr_crash.log", "a")
-    if f then
-        f:write(string.format("[%.1fs] %s | npcs:%d blocks:%d falling:%d markers:%d\n",
-            gameTime, msg, #npcs, #world.blocks, #fallingItems, #world.markers))
-        f:close()
-    end
-end
 
 -- Auto-test
 local autoTestDone = false
@@ -172,6 +190,8 @@ local autoTestTimer = 2
 function lovr.update(dt)
     local ok, err = pcall(function()
     gameTime = gameTime + dt
+    log.setTime(gameTime)
+    log.perfFrame(dt)
     world:update(dt)
 
     -- Auto-test material drop
@@ -215,16 +235,15 @@ function lovr.update(dt)
     for _, npc in ipairs(npcs) do npc:update(dt) end
     cam:update(dt)
 
-    -- Crash log: periodic state dump
-    if gameTime - lastCrashLog >= 2 then
-        lastCrashLog = gameTime
-        local aliveNpcs = 0
-        for _, n in ipairs(npcs) do if not n.dead then aliveNpcs = aliveNpcs + 1 end end
-        writeCrashState(string.format("TICK alive:%d", aliveNpcs))
+    -- Periodic state summary (every 2s)
+    log._tickTimer = (log._tickTimer or 0) - dt
+    if log._tickTimer <= 0 then
+        log._tickTimer = 2
+        log.summary(npcs, #world.blocks, fallingItems, #world.markers)
     end
     end) -- pcall
     if not ok then
-        writeCrashState("UPDATE ERROR: " .. tostring(err))
+        log.write("main", "UPDATE ERROR: %s", tostring(err))
     end
 end
 
@@ -631,7 +650,7 @@ end
 -- INPUT
 ----------------------------------------------------------------------------
 function lovr.keypressed(key)
-    writeCrashState("KEY:" .. key)
+    log.write("main", "KEY:%s", key)
     if key == "escape" then
         if cam.followNPC then
             cam.followNPC = nil
@@ -687,7 +706,7 @@ function lovr.wheelmoved(x, y)
 end
 
 function lovr.mousepressed(mx, my, button)
-    writeCrashState(string.format("CLICK btn:%d at:%.0f,%.0f", button, mx, my))
+    log.write("main", "CLICK btn:%d at:%.0f,%.0f", button, mx, my)
     local w, h = lovr.system.getWindowDimensions()
     if button == 1 then
         local bx, by = w / 2, h - 40
@@ -712,7 +731,7 @@ end
 function dropItem()
     local gx, gz = cam:getLookTarget()
     if not gx then return end
-    writeCrashState(string.format("DROP %s at:%d,%d falling:%d", Items.panel_order[selectedIdx], gx, gz, #fallingItems))
+    log.write("world", "DROP %s at:%d,%d falling:%d", Items.panel_order[selectedIdx], gx, gz, #fallingItems)
     local itemType = Items.panel_order[selectedIdx]
     -- Find highest occupied Y including blocks already in the world
     local topY = -1
