@@ -381,6 +381,22 @@ function drawNPC(pass, npc, dl)
         return  -- Don't draw normal body
     end
 
+    -- Push NPC render position away from adjacent solid blocks (prevent visual clipping)
+    local gx = math.floor(x + 0.5)
+    local gz = math.floor(z + 0.5)
+    local npcY = math.floor(baseY + 0.5)
+    local pushX, pushZ = 0, 0
+    local pushDist = 0.2
+    -- Check all 4 cardinal directions at feet and head height
+    for _, dy in ipairs({npcY, npcY + 1}) do
+        if world:isSolid(gx + 1, dy, gz) then pushX = pushX - pushDist end
+        if world:isSolid(gx - 1, dy, gz) then pushX = pushX + pushDist end
+        if world:isSolid(gx, dy, gz + 1) then pushZ = pushZ - pushDist end
+        if world:isSolid(gx, dy, gz - 1) then pushZ = pushZ + pushDist end
+    end
+    x = x + pushX * 0.5  -- dampen to avoid jitter
+    z = z + pushZ * 0.5
+
     local isMoving = npc.task ~= nil and not npc.dead
     local swing = isMoving and math.sin(gameTime * 8) * 0.4 or 0
 
