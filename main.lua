@@ -222,7 +222,6 @@ function lovr.draw(pass)
         pass:line(i, 0.02, 0, i, 0.02, g)
         pass:line(0, 0.02, i, g, 0.02, i)
     end
-
     -- Crosshair highlight
     local lookX, lookZ = cam:getLookTarget()
     if lookX then
