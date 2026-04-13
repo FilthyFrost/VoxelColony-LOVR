@@ -532,6 +532,13 @@ function T.loadAll()
         cobblestone_wall  = T.cobblestoneWall(),
         bookshelf         = T.bookshelf(),
         crafting_table    = T.craftingTable(),
+        -- Stairs reuse plank textures
+        spruce_stairs     = T.sprucePlanks(),
+        oak_stairs        = T.oakPlanks(),
+        dark_oak_stairs   = T.darkOakPlanks(),
+        cobblestone_stairs= T.cobblestone(),
+        -- Trapdoor
+        spruce_trapdoor   = T.trapdoor(),
     }
 end
 

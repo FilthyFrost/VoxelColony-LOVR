@@ -180,8 +180,14 @@ function lovr.load()
             for _, b in ipairs(tmpl.blocks) do
                 local wx = originX + b.x
                 local wz = originZ + b.z
-                local mat = b.t or "wall"  -- use direct material type
-                if world:addBlock(wx, b.y, wz, mat, "placed") then
+                local mat = b.t or "wall"
+                local block = world:addBlock(wx, b.y, wz, mat, "placed")
+                if block then
+                    -- Store Minecraft block metadata for rendering
+                    block.facing = b.f
+                    block.half = b.h
+                    block.shape = b.s
+                    block.open = b.o
                     placed = placed + 1
                 end
             end
@@ -298,24 +304,112 @@ function lovr.draw(pass)
         pass:box(lookX, 0.03, lookZ, 1, 0.02, 1)
     end
 
+    -- Facing direction to rotation angle (radians around Y axis)
+    local FACING_ANGLE = {north=0, south=math.pi, east=math.pi*0.5, west=math.pi*1.5}
+
     -- Blocks
     for _, b in ipairs(world.blocks) do
         if b.state ~= "carried" then
             pass:setColor(dl, dl, dl)
             local t = tex[b.itemType] or tex.wood
             pass:setMaterial(t)
-            if b.itemType == "door" then
-                pass:box(b.gx, b.gy + 1, b.gz, 0.95, 1.95, 0.15)
-            elseif b.itemType == "bed" then
-                pass:box(b.gx, b.gy + 0.3, b.gz, 0.95, 0.55, 1.8)
-            elseif b.itemType == "torch" then
-                pass:box(b.gx, b.gy + 0.3, b.gz, 0.15, 0.6, 0.15)
-            elseif b.itemType == "chest" then
-                pass:box(b.gx, b.gy + 0.4, b.gz, 0.85, 0.75, 0.85)
-            elseif b.itemType == "ladder" then
-                pass:box(b.gx, b.gy + 0.5, b.gz, 0.95, 0.95, 0.1)
+            local bx, by, bz = b.gx, b.gy, b.gz
+            local typ = b.itemType
+            local facing = b.facing
+            local half = b.half
+            local shape = b.shape
+
+            if typ == "door" then
+                pass:box(bx, by + 1, bz, 0.95, 1.95, 0.15)
+
+            elseif typ == "bed" then
+                pass:box(bx, by + 0.3, bz, 0.95, 0.55, 1.8)
+
+            elseif typ == "torch" then
+                pass:box(bx, by + 0.3, bz, 0.15, 0.6, 0.15)
+
+            elseif typ == "chest" then
+                pass:box(bx, by + 0.4, bz, 0.85, 0.75, 0.85)
+
+            -- STAIRS: L-shaped block (bottom slab + back wall), rotated by facing
+            elseif typ == "spruce_stairs" or typ == "oak_stairs" or typ == "dark_oak_stairs"
+                   or typ == "cobblestone_stairs" then
+                local angle = FACING_ANGLE[facing or "north"] or 0
+                local topHalf = (half == "top")
+                pass:push()
+                pass:translate(bx, by + 0.5, bz)
+                pass:rotate(angle, 0, 1, 0)
+                if topHalf then
+                    -- Top half stairs: inverted
+                    pass:box(0, 0.25, 0, 0.98, 0.48, 0.98)      -- full top slab
+                    pass:box(0, -0.25, 0.25, 0.98, 0.48, 0.48)  -- front bottom step
+                else
+                    -- Bottom half stairs: normal
+                    pass:box(0, -0.25, 0, 0.98, 0.48, 0.98)     -- full bottom slab
+                    pass:box(0, 0.25, 0.25, 0.98, 0.48, 0.48)   -- back top step
+                end
+                pass:pop()
+
+            -- SLABS: half-height block
+            elseif typ == "oak_slab" or typ == "spruce_slab" or typ == "dark_oak_slab" then
+                if half == "top" then
+                    pass:box(bx, by + 0.75, bz, 0.98, 0.48, 0.98)
+                elseif half == "double" then
+                    pass:box(bx, by + 0.5, bz, 0.98, 0.98, 0.98)  -- full block
+                else -- bottom (default)
+                    pass:box(bx, by + 0.25, bz, 0.98, 0.48, 0.98)
+                end
+
+            -- TRAPDOORS: thin flat panel
+            elseif typ == "trapdoor" or typ == "spruce_trapdoor" then
+                local angle = FACING_ANGLE[facing or "north"] or 0
+                if b.open then
+                    -- Open: vertical panel on wall side
+                    pass:push()
+                    pass:translate(bx, by + 0.5, bz)
+                    pass:rotate(angle, 0, 1, 0)
+                    pass:box(0, 0, -0.45, 0.95, 0.95, 0.08)
+                    pass:pop()
+                else
+                    -- Closed: horizontal panel
+                    if half == "top" then
+                        pass:box(bx, by + 0.95, bz, 0.95, 0.08, 0.95)
+                    else
+                        pass:box(bx, by + 0.05, bz, 0.95, 0.08, 0.95)
+                    end
+                end
+
+            -- FENCES: thin post + crossbar
+            elseif typ == "fence" then
+                pass:box(bx, by + 0.5, bz, 0.2, 0.98, 0.2)     -- center post
+                pass:box(bx, by + 0.65, bz, 0.7, 0.08, 0.08)   -- top rail X
+                pass:box(bx, by + 0.35, bz, 0.08, 0.08, 0.7)   -- bottom rail Z
+
+            -- GLASS PANES: thin vertical panel
+            elseif typ == "glass_pane" then
+                pass:box(bx, by + 0.5, bz, 0.08, 0.98, 0.98)
+
+            -- LADDERS: thin panel on wall
+            elseif typ == "ladder" then
+                local angle = FACING_ANGLE[facing or "north"] or 0
+                pass:push()
+                pass:translate(bx, by + 0.5, bz)
+                pass:rotate(angle, 0, 1, 0)
+                pass:box(0, 0, -0.45, 0.95, 0.95, 0.08)
+                pass:pop()
+
+            -- COBBLESTONE WALL: thin column
+            elseif typ == "cobblestone_wall" then
+                pass:box(bx, by + 0.5, bz, 0.35, 0.98, 0.35)
+
+            -- LEAVES: slightly smaller with transparency
+            elseif typ == "leaves" then
+                pass:setColor(dl, dl, dl, 0.85)
+                pass:box(bx, by + 0.5, bz, 0.95, 0.95, 0.95)
+
+            -- DEFAULT: full cube
             else
-                pass:box(b.gx, b.gy + 0.5, b.gz, 0.98, 0.98, 0.98)
+                pass:box(bx, by + 0.5, bz, 0.98, 0.98, 0.98)
             end
             pass:setMaterial()
 

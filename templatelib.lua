@@ -95,17 +95,21 @@ function TL.toBlueprint(tmpl, homeX, homeZ, npc)
             goto nextBlock
         end
 
-        -- Use direct material type from template (t field) or fall back to slot system
         local blockType
         if b.t then
-            blockType = b.t  -- direct: "wall", "wood", "roof", "glass"
+            blockType = b.t
         else
             blockType = slotMap[b.slot] or slotMap.primary or "wall"
         end
         steps[#steps + 1] = {
             action = "place",
             x = wx, y = wy, z = wz,
-            need = blockType
+            need = blockType,
+            -- Preserve Minecraft block metadata for rendering
+            facing = b.f,
+            half = b.h,
+            shape = b.s,
+            open = b.o,
         }
 
         ::nextBlock::

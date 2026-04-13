@@ -124,64 +124,125 @@ def classify_block_name(name):
     return "primary"
 
 
+def extract_facing(name):
+    """Extract facing direction from block state string."""
+    import re
+    m = re.search(r'facing=(\w+)', name)
+    return m.group(1) if m else None
+
+def extract_half(name):
+    """Extract half (top/bottom) from block state."""
+    import re
+    m = re.search(r'half=(\w+)', name)
+    if m: return m.group(1)
+    m = re.search(r'type=(\w+)', name)  # slabs use type=top/bottom/double
+    if m and m.group(1) in ('top','bottom','double'): return m.group(1)
+    return None
+
+def extract_shape(name):
+    """Extract shape for stairs (straight, inner_left, inner_right, outer_left, outer_right)."""
+    import re
+    m = re.search(r'shape=(\w+)', name)
+    return m.group(1) if m else None
+
+def extract_open(name):
+    """Extract open state for trapdoors/doors."""
+    import re
+    m = re.search(r'open=(\w+)', name)
+    return m.group(1) == 'true' if m else False
+
+def extract_axis(name):
+    """Extract axis for logs (x/y/z)."""
+    import re
+    m = re.search(r'axis=(\w+)', name)
+    return m.group(1) if m else None
+
+
 def classify_block_to_material(name):
     """Map Minecraft block to specific block type matching our textures.
     Returns the exact texture key used in textures.lua loadAll()."""
-    name = name.lower()
-    if "air" in name: return None
-    if "water" in name or "lava" in name: return None
-    # Skip
-    for skip in ["flower","tulip","poppy","cornflower","carpet","button","pressure",
-                  "lever","sign","banner","painting","torch","lantern","campfire",
-                  "vine","sugar_cane","wheat","potted","brewing","grindstone",
-                  "stonecutter","bell","cobweb","bed","chest","barrel"]:
-        if skip in name: return None
-    if "door" in name and "trapdoor" not in name: return "door"
-    # Skip ground
-    for skip in ["dirt","grass_block","path","farmland"]:
-        if skip in name: return None
+    # Strip block state properties for classification (check base name only)
+    base = name.lower().split("[")[0].replace("minecraft:", "")
 
-    # Specific block type mapping (matches textures.lua keys)
-    if "glass_pane" in name or "stained_glass_pane" in name: return "glass_pane"
-    if "glass" in name: return "glass"
+    if base == "air" or base == "cave_air" or base == "void_air": return None
+    if base in ("water","lava"): return None
 
-    if "stripped_spruce" in name: return "stripped_spruce_log"
-    if "spruce_plank" in name: return "spruce_planks"
-    if "spruce_stair" in name or "spruce_slab" in name: return "spruce_slab"
-    if "spruce_trapdoor" in name: return "trapdoor"
-    if "spruce_fence" in name: return "fence"
-    if "spruce_log" in name: return "spruce_log"
+    # Skip non-structural blocks
+    skip_blocks = {"poppy","dandelion","cornflower","lily_of_the_valley","oxeye_daisy",
+        "red_tulip","orange_tulip","white_tulip","pink_tulip","blue_orchid","allium","azure_bluet",
+        "carpet","red_carpet","white_carpet","black_carpet",
+        "stone_button","oak_button","spruce_button","birch_button",
+        "stone_pressure_plate","oak_pressure_plate","heavy_weighted_pressure_plate","light_weighted_pressure_plate",
+        "lever","redstone_wire","redstone_torch","redstone_wall_torch","repeater","comparator",
+        "wall_sign","oak_wall_sign","spruce_wall_sign","oak_sign","spruce_sign",
+        "wall_banner","white_banner",
+        "painting","item_frame",
+        "torch","wall_torch","soul_torch","soul_wall_torch",
+        "lantern","soul_lantern",
+        "campfire","soul_campfire",
+        "vine","sugar_cane","wheat","carrots","potatoes","beetroots","sweet_berry_bush",
+        "potted_poppy","potted_orange_tulip","potted_red_tulip","potted_cactus","potted_fern",
+        "brewing_stand","grindstone","stonecutter","bell","anvil","cauldron","composter",
+        "cobweb","snow","snow_block","ice",
+        "red_bed","green_bed","white_bed","blue_bed","cyan_bed",
+        "chest","trapped_chest","ender_chest","barrel","shulker_box",
+        "grass_block","dirt","dirt_path","coarse_dirt","podzol","farmland","sand","gravel","clay",
+    }
+    if base in skip_blocks: return None
 
-    if "dark_oak_plank" in name: return "dark_oak_planks"
-    if "dark_oak_stair" in name or "dark_oak_slab" in name: return "oak_slab"
-    if "dark_oak_trapdoor" in name: return "trapdoor"
+    # Specific block type mapping using base name (no bracket properties)
+    # Doors
+    if base in ("oak_door","spruce_door","birch_door","dark_oak_door","iron_door"): return "door"
 
-    if "oak_plank" in name: return "oak_planks"
-    if "oak_stair" in name or "oak_slab" in name: return "oak_slab"
-    if "oak_log" in name: return "oak_log"
-    if "oak_fence" in name: return "fence"
+    # Glass
+    if "glass_pane" in base: return "glass_pane"
+    if "glass" in base: return "glass"
 
-    if "birch_leaves" in name or "leaves" in name: return "leaves"
-    if "bookshelf" in name: return "bookshelf"
-    if "crafting_table" in name: return "crafting_table"
-    if "ladder" in name: return "ladder"
+    # Spruce
+    if "stripped_spruce" in base: return "stripped_spruce_log"
+    if base == "spruce_planks": return "spruce_planks"
+    if "spruce_stairs" in base: return "spruce_stairs"
+    if "spruce_slab" in base: return "spruce_slab"
+    if "spruce_trapdoor" in base: return "spruce_trapdoor"
+    if "spruce_fence_gate" in base: return "fence"
+    if "spruce_fence" in base: return "fence"
+    if "spruce_log" in base: return "spruce_log"
 
-    if "stone_brick" in name: return "stone_bricks"
-    if "cobblestone_wall" in name: return "cobblestone_wall"
-    if "cobblestone_stair" in name: return "cobblestone"
-    if "cobblestone" in name: return "cobblestone"
-    if "mossy_cobblestone" in name: return "cobblestone"
+    # Dark oak
+    if base == "dark_oak_planks": return "dark_oak_planks"
+    if "dark_oak_stairs" in base: return "dark_oak_stairs"
+    if "dark_oak_slab" in base: return "dark_oak_slab"
+    if "dark_oak_trapdoor" in base: return "trapdoor"
 
-    if "sandstone" in name: return "wall"
-    if "stone" in name: return "wall"
+    # Oak
+    if base == "oak_planks": return "oak_planks"
+    if "oak_stairs" in base: return "oak_stairs"
+    if "oak_slab" in base: return "oak_slab"
+    if "oak_log" in base: return "oak_log"
+    if "oak_fence" in base: return "fence"
 
-    # Fallback
-    if "fence" in name: return "fence"
-    if "trapdoor" in name: return "trapdoor"
-    if "stair" in name: return "oak_slab"
-    if "slab" in name: return "oak_slab"
-    if "log" in name or "wood" in name: return "oak_log"
-    if "plank" in name: return "oak_planks"
+    # Misc wood/decoration
+    if "leaves" in base: return "leaves"
+    if base == "bookshelf": return "bookshelf"
+    if base == "crafting_table": return "crafting_table"
+    if "ladder" in base: return "ladder"
+
+    # Stone family
+    if "stone_brick" in base: return "stone_bricks"
+    if "cobblestone_wall" in base: return "cobblestone_wall"
+    if "cobblestone_stairs" in base: return "cobblestone"
+    if "cobblestone" in base: return "cobblestone"
+
+    if "sandstone" in base: return "wall"
+    if "stone" in base: return "wall"
+
+    # Fallback by keyword
+    if "fence" in base: return "fence"
+    if "trapdoor" in base: return "trapdoor"
+    if "stairs" in base: return "oak_stairs"
+    if "slab" in base: return "oak_slab"
+    if "log" in base or "wood" in base: return "oak_log"
+    if "planks" in base: return "oak_planks"
 
     return "wall"
 
@@ -271,7 +332,16 @@ def parse_schematic(filepath):
                     if mat == "door":
                         if door_pos is None: door_pos = (x, 0, z)
                     elif mat:
-                        blocks.append((x, y, z, mat))
+                        meta = {
+                            'facing': extract_facing(bname),
+                            'half': extract_half(bname),
+                            'shape': extract_shape(bname),
+                            'axis': extract_axis(bname),
+                            'open': extract_open(bname),
+                        }
+                        # Strip None values
+                        meta = {k:v for k,v in meta.items() if v is not None and v is not False}
+                        blocks.append((x, y, z, mat, meta))
 
     blocks.sort(key=lambda b: (b[1], b[2], b[0]))
 
@@ -279,10 +349,8 @@ def parse_schematic(filepath):
     from collections import Counter
     y_ground = Counter()
     y_total_c = Counter()
-    for x, y, z, s in blocks:
-        y_total_c[y] += 1
-        # Check if this was originally dirt/grass (slot="primary" at low Y levels)
-        # We use a heuristic: if >50% of blocks at a Y level are at y<3, it's probably ground
+    for b in blocks:
+        y_total_c[b[1]] += 1
 
     # Simpler approach: strip Y levels where dirt/grass dominates
     # Re-parse to check ground blocks specifically
@@ -322,9 +390,9 @@ def parse_schematic(filepath):
         print(f"  Ground level detected: y=0 to y={ground_y-1} (stripped)")
         # Shift all blocks down and remove ground blocks
         new_blocks = []
-        for x, y, z, s in blocks:
-            if y >= ground_y:
-                new_blocks.append((x, y - ground_y, z, s))
+        for b in blocks:
+            if b[1] >= ground_y:
+                new_blocks.append((b[0], b[1] - ground_y, b[2], b[3], b[4] if len(b) > 4 else {}))
         blocks = new_blocks
         # Adjust door position
         if door_pos:
@@ -363,8 +431,16 @@ def to_lua(data, name):
     lines.append(f'    tags = {{"community", "minecraft"}},')
     lines.append(f'    blocks = {{')
 
-    for x, y, z, mat in data['blocks']:
-        lines.append(f'        {{x={x},y={y},z={z},t="{mat}"}},')
+    for entry in data['blocks']:
+        x, y, z, mat = entry[0], entry[1], entry[2], entry[3]
+        meta = entry[4] if len(entry) > 4 else {}
+        extra = ""
+        if meta.get('facing'): extra += f',f="{meta["facing"]}"'
+        if meta.get('half'): extra += f',h="{meta["half"]}"'
+        if meta.get('shape'): extra += f',s="{meta["shape"]}"'
+        if meta.get('axis'): extra += f',a="{meta["axis"]}"'
+        if meta.get('open'): extra += f',o=true'
+        lines.append(f'        {{x={x},y={y},z={z},t="{mat}"{extra}}},')
 
     lines.append(f'    }}')
     lines.append(f'}}')

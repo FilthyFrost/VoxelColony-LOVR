@@ -37,6 +37,15 @@ Items.registry = {
     cobblestone_wall  = { label = "c.wall",  category = "building", building_type = "wall",  color = {0.50, 0.50, 0.48} },
     bookshelf         = { label = "books",   category = "building", building_type = "wall",  color = {0.55, 0.38, 0.20} },
     crafting_table    = { label = "craft",   category = "building", building_type = "wall",  color = {0.55, 0.40, 0.22} },
+    -- Stairs (non-cube: L-shaped)
+    spruce_stairs     = { label = "s.stair", category = "building", building_type = "roof",  color = {0.36, 0.24, 0.13} },
+    oak_stairs        = { label = "o.stair", category = "building", building_type = "roof",  color = {0.58, 0.42, 0.22} },
+    dark_oak_stairs   = { label = "d.stair", category = "building", building_type = "roof",  color = {0.28, 0.18, 0.08} },
+    cobblestone_stairs= { label = "c.stair", category = "building", building_type = "roof",  color = {0.50, 0.50, 0.48} },
+    -- Trapdoors (non-cube: thin panel)
+    spruce_trapdoor   = { label = "s.trap",  category = "building", building_type = "wall",  color = {0.38, 0.25, 0.14} },
+    -- Glass pane (thin)
+    glass_pane        = { label = "g.pane",  category = "building", building_type = "wall",  color = {0.75, 0.88, 0.95}, transparent = true },
 }
 
 -- Ordered list for UI carousel
