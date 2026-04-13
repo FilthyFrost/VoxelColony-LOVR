@@ -1311,6 +1311,12 @@ function NPC:_followPath(dt)
     if self.injured then stepTime = stepTime * self.cfg.HP_INJURED_SPEED_MULT end
     self.stepTimer = stepTime
     local wp = self.path[self.pathIdx]
+    -- Validate waypoint: if blocked by new block, invalidate path and recalc
+    if not self.world:canStandAt(wp.x, wp.y, wp.z) then
+        self.path = nil
+        self.pathRecalcTimer = 0  -- force recalc next frame
+        return false
+    end
     self.gx, self.gy, self.gz = wp.x, wp.y, wp.z
     self.pathIdx = self.pathIdx + 1
     return false
