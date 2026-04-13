@@ -385,6 +385,11 @@ function drawNPC(pass, npc, dl)
     if npc.dead then
         skinR, skinG, skinB = 0.4 * dl, 0.15 * dl, 0.15 * dl
         shirtR, shirtG, shirtB = 0.25 * dl, 0.15 * dl, 0.15 * dl
+    elseif npc.injured then
+        -- Darken injured NPC
+        skinR = skinR * 0.5; skinG = skinG * 0.5; skinB = skinB * 0.5
+        shirtR = shirtR * 0.5; shirtG = shirtG * 0.5; shirtB = shirtB * 0.5
+        pantsR = pantsR * 0.5; pantsG = pantsG * 0.5; pantsB = pantsB * 0.5
     end
 
     -- Legs
@@ -429,6 +434,21 @@ function drawNPC(pass, npc, dl)
         pass:setMaterial(t)
         pass:box(x, baseY + 1.5, z, 0.35, 0.35, 0.35)
         pass:setMaterial()
+    end
+
+    -- HP bar (only show when damaged)
+    if npc.hp < npc.cfg.HP_MAX and not npc.dead then
+        local hpR = npc.hp / npc.cfg.HP_MAX
+        pass:setColor(0.7, 0.15, 0.15, 0.7)
+        pass:box(x, baseY + 1.5, z, 0.5, 0.04, 0.02)
+        pass:setColor(0.15, 0.7, 0.15, 0.8)
+        pass:box(x - 0.25 * (1 - hpR), baseY + 1.5, z, 0.5 * hpR, 0.04, 0.02)
+    end
+
+    -- Fight effect (red flash)
+    if npc.fightTarget and not npc.dead then
+        pass:setColor(1, 0.15, 0.1, 0.4 + 0.3 * math.sin(gameTime * 15))
+        pass:sphere(x, baseY + 0.8, z, 0.35)
     end
 
     -- Chat bubble (when socializing)
@@ -558,7 +578,9 @@ function drawHUD(pass)
             end
 
             pass:setColor(1, 1, 1, 0.9)
-            pass:text(string.format("%s [%s] %s S:%.0f", displayName, label, moodStr, npc.stamina),
+            if label == "attack" then label = "ATK!"
+            elseif label == "fighting" then label = "FIGHT!" end
+            pass:text(string.format("%s HP:%d [%s] %s D:%d", displayName, npc.hp, label, moodStr, npc.desperation),
                 w - 120, lineY, 0, px(11))
         end
     end

@@ -28,6 +28,11 @@ local THOUGHT_MAP = {
     need_roof      = {icon = "roof",   text = "Need roof!"},
     need_food      = {icon = "apple",  text = "Need food!"},
     socialize      = {icon = "chat",   text = "Let's chat!"},
+    attacking      = {icon = "fist",   text = "Get out!"},
+    fighting       = {icon = "fight",  text = "!!!"},
+    lost_home      = {icon = "sad",    text = "No..."},
+    helping        = {icon = "shield", text = "Stop!"},
+    fleeing        = {icon = "run",    text = "!"},
     sleep          = {icon = "bed",    text = "Sleepy..."},
     sleeping       = {icon = "zzz",    text = "Zzz"},
     sleep_exhausted= {icon = "zzz",    text = "So tired!"},
@@ -69,11 +74,21 @@ function NPC.new(config, world, items, startX, startZ, allNpcs)
     self.hunger = config.HUNGER_MAX
     self.dead = false
 
+    -- HP
+    self.hp = config.HP_MAX
+    self.injured = false
+
     -- Stamina / Sleep
     self.stamina = config.STAMINA_MAX
     self.sleeping = false
     self.sleepPos = nil        -- {x, z} for rendering
     self.sleepQuality = 0      -- 0=ground, 1=indoor, 2=bed
+    self.outdoorSleepCount = 0 -- times slept outdoors (feeds desperation)
+
+    -- Combat
+    self.desperation = 0       -- 0-100
+    self.fightTarget = nil     -- NPC ref during combat
+    self.fightTimer = 0        -- combat animation countdown
 
     -- Social
     self.socialNeed = 80
@@ -150,7 +165,26 @@ function NPC:update(dt)
     self.ambition = math.min(self.cfg.AMBITION_MAX, self.ambition + self.cfg.AMBITION_GROWTH * dt)
     self.gratitude = math.max(0, self.gratitude - self.cfg.GRATITUDE_DECAY * dt)
 
-    if self.temperature <= 0 or self.hunger <= 0 then self.dead = true; return end
+    -- HP regen
+    if self.hp < self.cfg.HP_MAX then
+        local hpRegen = indoors and self.cfg.HP_REGEN_SHELTERED or self.cfg.HP_REGEN
+        self.hp = math.min(self.cfg.HP_MAX, self.hp + hpRegen * dt)
+    end
+    self.injured = self.hp < self.cfg.HP_INJURED_THRESHOLD
+
+    -- Death (extended with HP)
+    if self.temperature <= 0 or self.hunger <= 0 or self.hp <= 0 then
+        -- Notify friends of death
+        for _, other in ipairs(self.allNpcs) do
+            if other ~= self and not other.dead then
+                local rel = other:_getRelation(self)
+                if rel.affinity >= self.cfg.AFFINITY_FRIEND then
+                    other.moodValue = math.max(-100, other.moodValue - 30)
+                end
+            end
+        end
+        self.dead = true; return
+    end
 
     -- Stamina / Sleep system
     if self.sleeping then
@@ -209,6 +243,7 @@ function NPC:update(dt)
             self.sleepQuality = self:_findNearbyBed() and 2 or 1
         else
             self.sleepQuality = 0
+            self.outdoorSleepCount = self.outdoorSleepCount + 1
         end
         self:_setThought("sleep_exhausted")
         return
@@ -237,6 +272,9 @@ function NPC:update(dt)
 
     -- Social relationships
     self:_updateRelationships(dt)
+
+    -- Desperation
+    self:_updateDesperation()
 
     if self.thoughtTimer > 0 then self.thoughtTimer = self.thoughtTimer - dt end
     self:_updateMood()
@@ -281,6 +319,7 @@ function NPC:_think()
         {name = "build_bigger",   score = self:_scoreBuildBigger()},
         {name = "sleep",          score = self:_scoreSleep()},
         {name = "socialize",      score = self:_scoreSocialize()},
+        {name = "attack",         score = self:_scoreAttack()},
     }
     for _, c in ipairs(candidates) do
         c.score = c.score + math.random() * 2
@@ -309,6 +348,7 @@ function NPC:_think()
 end
 
 function NPC:_scoreContinueBuild()
+    if self.injured then return 0 end
     local bp = self.helpingBlueprint or self.blueprint
     if bp and not bp.completed then
         local base = self.helpingBlueprint and 88 or 90
@@ -476,6 +516,14 @@ function NPC:_updateRelationships(dt)
             if self.world.time - rel.lastTime > self.cfg.AFFINITY_DECAY_TIME then
                 rel.affinity = math.max(0, rel.affinity - self.cfg.AFFINITY_DECAY_RATE * dt)
             end
+            -- Grudge decay (very slow: -1 per 300s)
+            if rel.grudge and rel.grudge > 0 then
+                rel.grudgeTimer = (rel.grudgeTimer or 0) + dt
+                if rel.grudgeTimer > 300 then
+                    rel.grudge = rel.grudge - 1
+                    rel.grudgeTimer = 0
+                end
+            end
         end
     end
 end
@@ -503,7 +551,9 @@ end
 -- DECISIONS
 ----------------------------------------------------------------------------
 function NPC:_executeDecision(name)
-    if name == "continue_build" then
+    if name == "attack" then
+        self:_execAttack()
+    elseif name == "continue_build" then
         self:_pushBuildTask()
     elseif name == "help_build" then
         self:_execHelpBuild()
@@ -729,6 +779,8 @@ function NPC:_executeTask(dt)
     elseif t == "stockpile" then   self:_doStockpile(dt)
     elseif t == "go_sleep" then    self:_doGoSleep(dt)
     elseif t == "socialize" then   self:_doSocialize(dt)
+    elseif t == "attack" then      self:_doAttack(dt)
+    elseif t == "fighting" then    self:_doFighting(dt)
     end
 end
 
@@ -936,6 +988,237 @@ end
 ----------------------------------------------------------------------------
 -- MOVEMENT
 ----------------------------------------------------------------------------
+-- COMBAT SYSTEM
+----------------------------------------------------------------------------
+function NPC:_updateDesperation()
+    local d = 0
+    if not self:_hasShelter() then
+        d = d + self.cfg.DESPERATION_NO_SHELTER
+        d = d + self.outdoorSleepCount * self.cfg.DESPERATION_PER_OUTDOOR_SLEEP
+    end
+    d = d + math.max(0, 20 - self.stamina) * 0.5
+    d = d + math.max(0, 20 - self.hunger) * 0.8
+    d = d + math.max(0, 20 - self.temperature) * 0.6
+    d = d + math.max(0, -self.moodValue) * 0.3
+    -- Relative deprivation: others have shelter but I don't
+    if not self:_hasShelter() then
+        for _, other in ipairs(self.allNpcs) do
+            if other ~= self and not other.dead and other.shelterVerified then
+                d = d + self.cfg.DESPERATION_RELATIVE_DEPRIVATION
+            end
+        end
+    end
+    self.desperation = math.min(100, d)
+end
+
+function NPC:_scoreAttack()
+    if self.sleeping or self.injured then return 0 end
+    if self:_hasShelter() then return 0 end
+    if self.desperation < self.cfg.DESPERATION_ATTACK_THRESHOLD then return 0 end
+    local target = self:_findAttackTarget()
+    if not target then return 0 end
+    -- Hawk-Dove: V = desperation, C = fight cost
+    local V = self.desperation
+    local C = self:_calcFightCost(target)
+    local prob
+    if V >= C then prob = 1.0 else prob = V / C end
+    if self.traits.shy then prob = prob * 0.3 end
+    return prob * 85
+end
+
+function NPC:_findAttackTarget()
+    local best, bestScore = nil, -math.huge
+    for _, other in ipairs(self.allNpcs) do
+        if other ~= self and not other.dead and not other.sleeping
+           and other.shelterVerified and other.blueprint then
+            local score = (100 - other.stamina) * 0.5
+            local rel = self:_getRelation(other)
+            if (rel.grudge or 0) > 0 then score = score + 30 end
+            score = score - rel.affinity * 0.5
+            if score > bestScore then bestScore = score; best = other end
+        end
+    end
+    return best
+end
+
+function NPC:_calcFightCost(target)
+    local cost = 30
+    cost = cost + math.max(0, target.stamina - self.stamina) * 0.4
+    local rel = self:_getRelation(target)
+    cost = cost + rel.affinity * 0.6
+    return math.max(10, cost)
+end
+
+function NPC:_execAttack()
+    local target = self:_findAttackTarget()
+    if target then
+        self.task = {type = "attack", target = target, timer = 0}
+        self:_setThought("attacking")
+    end
+end
+
+function NPC:_doAttack(dt)
+    local target = self.task.target
+    if target.dead then self:_completeTask(); return end
+    local dist = math.abs(self.gx - target.gx) + math.abs(self.gz - target.gz)
+    if dist <= 1 then
+        -- Arrived: start fight
+        self.task = {type = "fighting", target = target, timer = self.cfg.COMBAT_DURATION}
+        self.fightTarget = target
+        target.fightTarget = self
+        -- Lock both NPCs
+        target.task = {type = "fighting", target = self, timer = self.cfg.COMBAT_DURATION}
+        target.path = nil
+        self.path = nil
+        -- Face each other
+        self.lookAtX = target.gx; self.lookAtZ = target.gz
+        target.lookAtX = self.gx; target.lookAtZ = self.gz
+        -- Notify bystanders
+        self:_notifyBystanders(target)
+    else
+        self:_moveTo(target.gx, 0, target.gz, dt)
+    end
+end
+
+function NPC:_doFighting(dt)
+    self.task.timer = self.task.timer - dt
+    if self.task.timer <= 0 then
+        local target = self.task.target
+        self:_resolveCombat(self, target)
+        self.fightTarget = nil
+        if target then target.fightTarget = nil end
+        self.lookAtX = nil; self.lookAtZ = nil
+        if target and not target.dead then
+            target.lookAtX = nil; target.lookAtZ = nil
+            target.task = nil
+            target.thinkTimer = 0
+        end
+        self:_completeTask()
+    end
+end
+
+function NPC:_resolveCombat(attacker, defender)
+    -- Power based on stamina + random
+    local atkPower = attacker.stamina * 0.6 + math.random() * 30
+    local defPower = defender.stamina * 0.6 + math.random() * 30
+
+    -- Both take damage
+    attacker.hp = math.max(0, attacker.hp - self.cfg.COMBAT_DEF_DAMAGE)
+    defender.hp = math.max(0, defender.hp - self.cfg.COMBAT_ATK_DAMAGE)
+    attacker.stamina = math.max(0, attacker.stamina - self.cfg.COMBAT_STAMINA_COST_ATK)
+    defender.stamina = math.max(0, defender.stamina - self.cfg.COMBAT_STAMINA_COST_DEF)
+    attacker.hunger = math.max(0, attacker.hunger - self.cfg.COMBAT_HUNGER_COST)
+    defender.hunger = math.max(0, defender.hunger - self.cfg.COMBAT_HUNGER_COST)
+
+    -- Relationship destruction + grudge
+    local relA = attacker:_getRelation(defender)
+    local relD = defender:_getRelation(attacker)
+    relA.affinity = math.max(0, relA.affinity - self.cfg.COMBAT_AFFINITY_LOSS_ATK)
+    relD.affinity = math.max(0, relD.affinity - self.cfg.COMBAT_AFFINITY_LOSS_DEF)
+    relD.grudge = (relD.grudge or 0) + self.cfg.COMBAT_GRUDGE_GAIN
+
+    -- Determine winner
+    local winner, loser
+    if atkPower > defPower then
+        winner, loser = attacker, defender
+        -- Extra damage to loser
+        loser.hp = math.max(0, loser.hp - 10)
+    else
+        winner, loser = defender, attacker
+        loser.hp = math.max(0, loser.hp - 10)
+    end
+
+    -- Check death
+    if loser.hp <= 0 then loser.dead = true end
+
+    -- House seizure: if attacker wins
+    if winner == attacker and defender.blueprint and not defender.dead then
+        attacker.blueprint = defender.blueprint
+        attacker.homeX = defender.homeX
+        attacker.homeZ = defender.homeZ
+        attacker.shelterVerified = defender.shelterVerified
+        defender.blueprint = nil
+        defender.shelterVerified = false
+        defender.homeX = defender.gx
+        defender.homeZ = defender.gz
+        defender.outdoorSleepCount = 0
+        attacker:_setThought("attacking")
+        defender:_setThought("lost_home")
+    elseif winner == defender then
+        attacker:_setThought("lost_home")
+        defender:_setThought("fighting")
+    end
+end
+
+function NPC:_notifyBystanders(defender)
+    for _, other in ipairs(self.allNpcs) do
+        if other ~= self and other ~= defender and not other.dead and not other.sleeping then
+            local dist = math.abs(self.gx - other.gx) + math.abs(self.gz - other.gz)
+            if dist <= self.cfg.COMBAT_NOTIFY_RADIUS then
+                local decision = other:_bystanderDecision(self, defender)
+                if decision == "help_defender" then
+                    -- Join fight against attacker: damage attacker
+                    self.hp = math.max(0, self.hp - 10)
+                    local rel = other:_getRelation(self)
+                    rel.affinity = math.max(0, rel.affinity - 20)
+                    other:_setThought("helping")
+                elseif decision == "help_attacker" then
+                    defender.hp = math.max(0, defender.hp - 10)
+                    local rel = other:_getRelation(defender)
+                    rel.affinity = math.max(0, rel.affinity - 20)
+                elseif decision == "flee" then
+                    -- Run away from fight
+                    local fleeX = other.gx + (other.gx - self.gx)
+                    local fleeZ = other.gz + (other.gz - self.gz)
+                    fleeX = math.max(1, math.min(self.cfg.GRID - 2, fleeX))
+                    fleeZ = math.max(1, math.min(self.cfg.GRID - 2, fleeZ))
+                    other.task = {type = "go_home", timer = 0}
+                    other:_setThought("fleeing")
+                end
+                -- "ignore" = do nothing
+            end
+        end
+    end
+end
+
+function NPC:_bystanderDecision(attacker, defender)
+    local relDef = self:_getRelation(defender)
+    local relAtk = self:_getRelation(attacker)
+
+    -- Hamilton: closeFriend always helps
+    if relDef.affinity >= self.cfg.AFFINITY_CLOSE_FRIEND then
+        return "help_defender"
+    end
+    if relAtk.affinity >= self.cfg.AFFINITY_CLOSE_FRIEND and relAtk.affinity > relDef.affinity then
+        return "help_attacker"
+    end
+
+    -- Bystander effect: more people nearby = less likely to help
+    local nearbyCount = 0
+    for _, o in ipairs(self.allNpcs) do
+        if o ~= self and o ~= attacker and o ~= defender and not o.dead then
+            if math.abs(self.gx - o.gx) + math.abs(self.gz - o.gz) <= 10 then
+                nearbyCount = nearbyCount + 1
+            end
+        end
+    end
+    local helpProb = 0.4 - nearbyCount * 0.15
+    if helpProb > 0 and relDef.affinity > 30 and math.random() < helpProb then
+        return "help_defender"
+    end
+
+    if self.traits.shy then return "flee" end
+    return "ignore"
+end
+
+function NPC:_hasGrudge(otherNpc)
+    local rel = self:_getRelation(otherNpc)
+    return (rel.grudge or 0) > 0
+end
+
+----------------------------------------------------------------------------
+-- MOVEMENT
+----------------------------------------------------------------------------
 function NPC:_moveTo(tx, ty, tz, dt)
     if self.gx == tx and self.gy == ty and self.gz == tz then return true end
     local needRecalc = (not self.path)
@@ -978,6 +1261,7 @@ function NPC:_followPath(dt)
     if self.traits.lazy then stepTime = stepTime * 1.3 end
     if self.excited then stepTime = stepTime / self.cfg.GIFT_EXCITED_SPEED_MULT end
     if self.stamina < self.cfg.STAMINA_TIRED then stepTime = stepTime * 1.4 end
+    if self.injured then stepTime = stepTime * self.cfg.HP_INJURED_SPEED_MULT end
     self.stepTimer = stepTime
     local wp = self.path[self.pathIdx]
     self.gx, self.gy, self.gz = wp.x, wp.y, wp.z
@@ -1123,6 +1407,12 @@ function NPC:_updateMood()
 
     -- Gratitude
     if self.gratitude > 30 then m = m + 10 end
+
+    -- Desperation
+    if self.desperation > 50 then m = m - 20; factors[#factors+1] = "desperate" end
+
+    -- Wounded
+    if self.hp < 50 then m = m - 20; factors[#factors+1] = "wounded" end
 
     self.moodValue = math.max(-100, math.min(100, m))
     self.moodFactors = factors

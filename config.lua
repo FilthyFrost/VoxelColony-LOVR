@@ -91,4 +91,27 @@ C.AFFINITY_FRIEND = 50
 C.AFFINITY_CLOSE_FRIEND = 70        -- can share shelter
 C.AFFINITY_PARTNER = 90
 
+-- HP / Combat / Desperation system
+C.HP_MAX = 100
+C.HP_REGEN = 0.05                   -- natural regen per second (very slow)
+C.HP_REGEN_SHELTERED = 0.2          -- regen in shelter (faster)
+C.HP_INJURED_THRESHOLD = 30         -- below: injured state
+C.HP_INJURED_SPEED_MULT = 2.5       -- injured: stepTime multiplier (slower)
+
+C.DESPERATION_ATTACK_THRESHOLD = 50 -- desperation must exceed this to consider attack
+C.DESPERATION_NO_SHELTER = 40       -- base desperation from having no shelter
+C.DESPERATION_PER_OUTDOOR_SLEEP = 10 -- per outdoor sleep event
+C.DESPERATION_RELATIVE_DEPRIVATION = 10 -- per other NPC with shelter
+
+C.COMBAT_DURATION = 2.0             -- fight animation seconds
+C.COMBAT_ATK_DAMAGE = 25            -- HP damage to defender
+C.COMBAT_DEF_DAMAGE = 15            -- HP damage to attacker (counter)
+C.COMBAT_STAMINA_COST_ATK = 20
+C.COMBAT_STAMINA_COST_DEF = 15
+C.COMBAT_HUNGER_COST = 10
+C.COMBAT_AFFINITY_LOSS_ATK = 40
+C.COMBAT_AFFINITY_LOSS_DEF = 50
+C.COMBAT_GRUDGE_GAIN = 1
+C.COMBAT_NOTIFY_RADIUS = 10         -- bystander notification range
+
 return C
