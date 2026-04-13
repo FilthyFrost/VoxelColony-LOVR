@@ -76,25 +76,51 @@ BLOCK_MAP = {
 DOOR_IDS = {64, 71, 193, 194, 195, 196, 197}
 
 def classify_block_name(name):
-    """Classify a Minecraft block name string into our slot system."""
+    """Classify a Minecraft block name string into our slot system.
+    Rule: include ALL solid structural blocks. Only skip truly non-structural ones."""
     name = name.lower()
+    # Skip: air, water, lava
     if "air" in name: return None
-    if "grass" in name or "dirt" in name or "sand" in name: return None
     if "water" in name or "lava" in name: return None
-    if "leaves" in name or "flower" in name or "sapling" in name: return None
+    # Skip: pure decoration (flowers, carpet, signs, banners, buttons)
+    if "flower" in name or "tulip" in name or "poppy" in name or "cornflower" in name: return None
     if "carpet" in name: return None
-    if "torch" in name or "lantern" in name: return None
     if "button" in name or "pressure" in name or "lever" in name: return None
-    if "sign" in name or "banner" in name: return None
-    if "bed" in name: return None  # furniture
-    if "chest" in name or "barrel" in name: return None  # furniture
-    if "door" in name: return "door"
-    if "glass" in name or "pane" in name: return "secondary"
-    if "log" in name or "wood" in name or "plank" in name or "fence" in name: return "secondary"
-    if "stair" in name or "slab" in name: return "primary"
-    if "trapdoor" in name: return "secondary"
+    if "sign" in name or "banner" in name or "painting" in name: return None
+    if "torch" in name or "lantern" in name: return None
+    if "campfire" in name: return None
+    if "vine" in name or "sugar_cane" in name or "wheat" in name: return None
+    if "potted" in name or "brewing" in name or "grindstone" in name: return None
+    if "stonecutter" in name or "bell" in name: return None
+    if "cobweb" in name: return None
+    # Furniture (skip — handled separately)
+    if "bed" in name: return None
+    if "chest" in name or "barrel" in name: return None
+    # Door (mark for doorPos detection)
+    if "door" in name and "trapdoor" not in name: return "door"
+    # Glass → secondary
+    if "glass" in name and "pane" not in name: return "secondary"
+    if "pane" in name: return "secondary"
+    # Wood family → secondary
+    if "log" in name or "plank" in name or "wood" in name: return "secondary"
+    if "stripped" in name: return "secondary"
+    if "fence" in name and "gate" not in name: return "secondary"
+    if "fence_gate" in name: return "secondary"
     if "bookshelf" in name or "crafting" in name: return "secondary"
-    # Default: stone/brick/cobble/etc → primary
+    if "trapdoor" in name: return "secondary"
+    # Stairs and slabs → primary (structural/roof)
+    if "stair" in name: return "primary"
+    if "slab" in name: return "primary"
+    # Ground blocks → primary (foundation)
+    if "dirt" in name or "grass_block" in name or "path" in name: return "primary"
+    if "farmland" in name: return "primary"
+    if "sand" in name: return "primary"
+    if "gravel" in name: return "primary"
+    # Leaves → secondary (decorative but visible)
+    if "leaves" in name: return "secondary"
+    # Ladder → secondary
+    if "ladder" in name: return "secondary"
+    # Default: all other solid blocks → primary
     return "primary"
 
 
@@ -178,6 +204,65 @@ def parse_schematic(filepath):
                         if door_pos is None: door_pos = (x, 0, z)
                     elif slot:
                         blocks.append((x, y, z, slot))
+
+    blocks.sort(key=lambda b: (b[1], b[2], b[0]))
+
+    # Auto-detect ground level: find lowest Y where dirt/grass is < 50%
+    from collections import Counter
+    y_ground = Counter()
+    y_total_c = Counter()
+    for x, y, z, s in blocks:
+        y_total_c[y] += 1
+        # Check if this was originally dirt/grass (slot="primary" at low Y levels)
+        # We use a heuristic: if >50% of blocks at a Y level are at y<3, it's probably ground
+
+    # Simpler approach: strip Y levels where dirt/grass dominates
+    # Re-parse to check ground blocks specifically
+    ground_y = 0
+    if "Palette" in [t.name for t in nbt.tags]:
+        pal = nbt["Palette"]
+        id_map = {}
+        for tn in pal.keys():
+            id_map[int(pal[tn].value)] = tn
+        bd = nbt["BlockData"].value
+        y_dirt_cnt = Counter()
+        y_all_cnt = Counter()
+        di = 0
+        for y in range(height):
+            for z in range(length):
+                for x in range(width):
+                    if di >= len(bd): break
+                    val = 0; vl = 0
+                    while di < len(bd):
+                        by = bd[di]; val |= (by & 0x7F) << (vl * 7); di += 1; vl += 1
+                        if (by & 0x80) == 0: break
+                    nm = id_map.get(val, "")
+                    if "air" not in nm:
+                        y_all_cnt[y] += 1
+                        if "dirt" in nm or "grass" in nm:
+                            y_dirt_cnt[y] += 1
+        # Find first Y where dirt < 30%
+        for y in range(height):
+            if y_all_cnt[y] > 0:
+                pct = y_dirt_cnt[y] / y_all_cnt[y]
+                if pct < 0.3:
+                    ground_y = y
+                    break
+            ground_y = y + 1
+
+    if ground_y > 0:
+        print(f"  Ground level detected: y=0 to y={ground_y-1} (stripped)")
+        # Shift all blocks down and remove ground blocks
+        new_blocks = []
+        for x, y, z, s in blocks:
+            if y >= ground_y:
+                new_blocks.append((x, y - ground_y, z, s))
+        blocks = new_blocks
+        # Adjust door position
+        if door_pos:
+            door_pos = (door_pos[0], 0, door_pos[2])
+        # Adjust height
+        height = height - ground_y
 
     blocks.sort(key=lambda b: (b[1], b[2], b[0]))
 

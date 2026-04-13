@@ -9,7 +9,7 @@ TL.all = {}
 
 function TL.init()
     local names = {
-        "small_survival_house", "small_cozy_house", "cozy_cabin", "start_house",
+        "small_15x13_survival_house", "cozy_cabin", "start_house", "small_cozy_house",
     }
     TL.all = {}
     for _, name in ipairs(names) do
