@@ -84,11 +84,23 @@ function W:addBlock(gx, gy, gz, itemType, state)
     if gx < 0 or gx >= self.config.GRID or gz < 0 or gz >= self.config.GRID then return nil end
     local k = self:_key(gx, gy, gz)
     if self.occupied[k] then return nil end
+    -- Bed occupies 2 cells: check second cell too
+    if itemType == "bed" and state ~= "carried" and state ~= "loose" then
+        local k2 = self:_key(gx, gy, gz + 1)
+        if self.occupied[k2] then return nil end
+    end
     local st = state or "loose"
     local block = {gx=gx, gy=gy, gz=gz, itemType=itemType, state=st, dur=self.config.BLOCK_DUR,
                    dropTime=(st == "loose") and self.time or nil}
     self.blocks[#self.blocks+1] = block
-    if st ~= "carried" then self.occupied[k] = block end
+    if st ~= "carried" then
+        self.occupied[k] = block
+        -- Bed: also occupy (gx, gy, gz+1)
+        if itemType == "bed" and st == "placed" then
+            local k2 = self:_key(gx, gy, gz + 1)
+            if not self.occupied[k2] then self.occupied[k2] = block end
+        end
+    end
     return block
 end
 
@@ -96,6 +108,11 @@ function W:_removeAt(idx)
     local b = self.blocks[idx]
     local k = self:_key(b.gx, b.gy, b.gz)
     if self.occupied[k] == b then self.occupied[k] = nil end
+    -- Bed: also clear second cell
+    if b.itemType == "bed" then
+        local k2 = self:_key(b.gx, b.gy, b.gz + 1)
+        if self.occupied[k2] == b then self.occupied[k2] = nil end
+    end
     table.remove(self.blocks, idx)
 end
 
@@ -142,7 +159,10 @@ function W:isOccupied(gx, gy, gz) return self.occupied[self:_key(gx, gy, gz)] ~=
 -- Check if a block at this position is a solid obstacle (not a loose item on the ground)
 function W:isSolid(gx, gy, gz)
     local block = self.occupied[self:_key(gx, gy, gz)]
-    return block ~= nil and block.state ~= "loose"
+    if not block then return false end
+    if block.state == "loose" then return false end
+    if block.itemType == "door" then return false end  -- doors are passable
+    return true
 end
 
 -- Check if an NPC (1x2x1) can stand at grid position (gx, gy, gz)

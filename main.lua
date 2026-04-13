@@ -360,10 +360,11 @@ function drawNPC(pass, npc, dl)
     local x, z = npc.x, npc.z
     local baseY = npc.y
 
-    -- Sleeping: render lying down with Zzz
+    -- Sleeping: NPC lies down (Minecraft-style)
     if npc.sleeping then
-        local skinR = 0.85 * dl
+        local skinR, skinG, skinB = 0.85 * dl, 0.70 * dl, 0.55 * dl
         local shirtR, shirtG, shirtB
+        local pantsR, pantsG, pantsB
         if npc.shirtColor then
             shirtR = npc.shirtColor[1] * dl
             shirtG = npc.shirtColor[2] * dl
@@ -371,32 +372,52 @@ function drawNPC(pass, npc, dl)
         else
             shirtR, shirtG, shirtB = 0.2 * dl, 0.5 * dl, 0.8 * dl
         end
-        -- Body lying on ground
+        if npc.pantsColor then
+            pantsR = npc.pantsColor[1] * dl
+            pantsG = npc.pantsColor[2] * dl
+            pantsB = npc.pantsColor[3] * dl
+        else
+            pantsR, pantsG, pantsB = 0.25 * dl, 0.25 * dl, 0.35 * dl
+        end
+
+        -- Height: on bed = raised, on floor = ground level
+        local sleepY = baseY
+        if npc.sleepQuality == 2 then sleepY = sleepY + 0.35 end
+
+        -- Rotated body (lying on side along X axis)
+        pass:push()
+        pass:translate(x, sleepY + 0.2, z)
+        pass:rotate(math.pi / 2, 0, 0, 1)  -- rotate 90° around Z = lie down
+
+        -- Legs (bottom)
+        pass:setColor(pantsR, pantsG, pantsB)
+        pass:box(0, -0.35, 0, 0.12, 0.4, 0.12)
+        -- Torso (center)
         pass:setColor(shirtR, shirtG, shirtB)
-        pass:box(x, baseY + 0.15, z, 0.8, 0.2, 0.3)
-        -- Head
-        pass:setColor(skinR, 0.70 * dl, 0.55 * dl)
-        pass:box(x + 0.35, baseY + 0.15, z, 0.22, 0.22, 0.22)
-        -- Zzz bubble
+        pass:box(0, 0.05, 0, 0.3, 0.45, 0.18)
+        -- Head (top)
+        pass:setColor(skinR, skinG, skinB)
+        pass:box(0, 0.4, 0, 0.24, 0.24, 0.24)
+
+        pass:pop()
+
+        -- Zzz bubble (stays upright, billboard)
         local toCamX = cam.x - x
         local toCamZ = cam.z - z
         local angle = math.atan2(toCamX, toCamZ)
         pass:push()
-        pass:translate(x, baseY + 0.6, z)
+        pass:translate(x, sleepY + 0.7, z)
         pass:rotate(angle, 0, 1, 0)
         pass:setColor(1, 1, 1, 0.6 + 0.3 * math.sin(gameTime * 2))
-        local zzz = string.rep("z", 1 + math.floor(gameTime % 3))
-        pass:text(zzz, 0, 0, 0, 0.12)
+        pass:text(string.rep("z", 1 + math.floor(gameTime % 3)), 0, 0, 0, 0.12)
         pass:pop()
-        -- Sleep quality indicator
-        if npc.sleepQuality == 2 then
-            pass:setColor(0.2, 0.9, 0.3, 0.5)  -- green = bed
-        elseif npc.sleepQuality == 1 then
-            pass:setColor(0.8, 0.8, 0.2, 0.5)  -- yellow = indoor
-        else
-            pass:setColor(0.8, 0.3, 0.3, 0.5)  -- red = ground
-        end
-        pass:sphere(x - 0.3, baseY + 0.35, z, 0.06)
+
+        -- Sleep quality dot
+        if npc.sleepQuality == 2 then pass:setColor(0.2, 0.9, 0.3, 0.5)
+        elseif npc.sleepQuality == 1 then pass:setColor(0.8, 0.8, 0.2, 0.5)
+        else pass:setColor(0.8, 0.3, 0.3, 0.5) end
+        pass:sphere(x - 0.3, sleepY + 0.5, z, 0.05)
+
         return  -- Don't draw normal body
     end
 

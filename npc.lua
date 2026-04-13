@@ -893,6 +893,14 @@ function NPC:_doPlaceBlock(dt)
         self:_completeTask()
     else
         self:_moveToReach(tgt.x, tgt.y, tgt.z, dt)
+        -- Bail out if stuck too long (can't reach target)
+        if not self.path and self.task.timer > 10 then
+            log.write("build", "%s gave up placing %s at (%d,%d,%d)", self.name, self.task.step.need or "?", tgt.x, tgt.y, tgt.z)
+            self:_dropBlock()
+            local bp = self.helpingBlueprint or self.blueprint
+            if bp then Blueprint.advance(bp) end
+            self:_completeTask()
+        end
     end
 end
 

@@ -205,8 +205,10 @@ function BP.addFurnishingSteps(blueprint, world, items)
 
     -- Interior furniture FIRST (placed before door seals the entrance)
     if world:nearestLoose(0, 0, "bed") then
+        -- Bed occupies 2 cells in Z: place at iz2-1 so extension lands at iz2 (still inside)
+        local bedZ = math.max(iz1, iz2 - 1)
         blueprint.steps[#blueprint.steps + 1] = {
-            action = "place_furniture", x = ix2, y = 0, z = iz2,
+            action = "place_furniture", x = ix2, y = 0, z = bedZ,
             need = "bed", furniture_type = "bed",
         }
         added = true
