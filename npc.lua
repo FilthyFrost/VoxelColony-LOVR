@@ -136,7 +136,7 @@ function NPC.new(config, world, items, startX, startZ, allNpcs)
     -- Task
     self.task = nil
     self.stepTimer = 0
-    self.thinkTimer = 0
+    self.thinkTimer = math.random() * 2  -- stagger so NPCs don't all think same frame
 
     return self
 end
@@ -1366,10 +1366,11 @@ function NPC:_wander(dt)
     local dz = math.random(-1, 1)
     local nx = self.gx + dx
     local nz = self.gz + dz
-    if self.traits.shy then
-        local maxDist = 4
-        if math.abs(nx - self.homeX) > maxDist or math.abs(nz - self.homeZ) > maxDist then return end
-    end
+
+    -- All NPCs stay within wanderRange of home (prevents running off-map)
+    local maxDist = self.traits.shy and 4 or (self.traits.explorer and 15 or 10)
+    if math.abs(nx - self.homeX) > maxDist or math.abs(nz - self.homeZ) > maxDist then return end
+
     if nx >= 1 and nx < self.cfg.GRID - 2 and nz >= 1 and nz < self.cfg.GRID - 2 then
         if self.world:canStandAt(nx, self.gy, nz) then
             self.gx, self.gz = nx, nz

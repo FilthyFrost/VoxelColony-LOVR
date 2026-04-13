@@ -33,7 +33,7 @@ C.ROOM_CAPACITY = 2
 C.CROWD_CHECK_RADIUS = 3
 
 -- Pathfinding
-C.PATH_MAX_NODES = 5000        -- A* search budget (larger world needs more)
+C.PATH_MAX_NODES = 2000        -- A* search budget (balanced: coverage vs performance)
 C.PATH_RECALC_TIME = 2.0      -- seconds between path recalculations
 C.NPC_STEP_TIME = 0.2          -- seconds per grid step (movement speed)
 

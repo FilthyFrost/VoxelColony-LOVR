@@ -30,29 +30,29 @@ function W:update(dt)
         end
     end
 
-    -- Block gravity: blocks with no support below fall down
-    local gravity_changed = true
-    local gravity_passes = 0
-    while gravity_changed and gravity_passes < 5 do  -- max 5 passes per frame
-        gravity_changed = false
-        gravity_passes = gravity_passes + 1
-        for i = #self.blocks, 1, -1 do
-            local b = self.blocks[i]
-            if b.gy > 0 and (b.state == "placed" or b.state == "loose") then
-                -- Check if block directly below is empty
-                local belowKey = self:_key(b.gx, b.gy - 1, b.gz)
-                if not self.occupied[belowKey] then
-                    -- No support: fall one level
-                    local oldKey = self:_key(b.gx, b.gy, b.gz)
-                    if self.occupied[oldKey] == b then self.occupied[oldKey] = nil end
-                    b.gy = b.gy - 1
-                    local newKey = self:_key(b.gx, b.gy, b.gz)
-                    if not self.occupied[newKey] then
-                        self.occupied[newKey] = b
+    -- Block gravity: throttled (every 0.5s, not every frame)
+    self.gravityTimer = (self.gravityTimer or 0) - dt
+    if self.gravityTimer <= 0 then
+        self.gravityTimer = 0.5
+        for pass = 1, 3 do
+            local fell = false
+            for i = #self.blocks, 1, -1 do
+                local b = self.blocks[i]
+                if b.gy > 0 and (b.state == "placed" or b.state == "loose") then
+                    local belowKey = self:_key(b.gx, b.gy - 1, b.gz)
+                    if not self.occupied[belowKey] then
+                        local oldKey = self:_key(b.gx, b.gy, b.gz)
+                        if self.occupied[oldKey] == b then self.occupied[oldKey] = nil end
+                        b.gy = b.gy - 1
+                        local newKey = self:_key(b.gx, b.gy, b.gz)
+                        if not self.occupied[newKey] then
+                            self.occupied[newKey] = b
+                        end
+                        fell = true
                     end
-                    gravity_changed = true
                 end
             end
+            if not fell then break end
         end
     end
 
