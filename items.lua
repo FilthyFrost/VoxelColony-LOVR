@@ -48,8 +48,25 @@ Items.registry = {
     glass_pane        = { label = "g.pane",  category = "building", building_type = "wall",  color = {0.75, 0.88, 0.95}, transparent = true },
 }
 
--- Ordered list for UI carousel
-Items.panel_order = {"wall", "wood", "roof", "glass", "door", "bed", "ladder", "torch", "chest", "apple"}
+-- Ordered list for UI carousel (all block types available to player)
+Items.panel_order = {
+    -- Basic building
+    "wall", "wood", "roof", "glass",
+    -- Minecraft building blocks
+    "cobblestone", "stone_bricks", "oak_planks", "oak_log",
+    "dark_oak_planks", "spruce_planks", "spruce_log", "stripped_spruce_log",
+    -- Non-cube blocks
+    "oak_stairs", "dark_oak_stairs", "spruce_stairs", "cobblestone_stairs",
+    "oak_slab", "spruce_slab",
+    "glass_pane", "cobblestone_wall",
+    "fence", "trapdoor", "spruce_trapdoor",
+    -- Decorative
+    "leaves", "bookshelf", "crafting_table",
+    -- Furniture
+    "door", "bed", "ladder", "torch", "chest",
+    -- Food
+    "apple",
+}
 
 function Items.get(t) return Items.registry[t] end
 function Items.getColor(t)

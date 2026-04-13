@@ -96,9 +96,10 @@ function TL.toBlueprint(tmpl, homeX, homeZ, npc)
             goto nextBlock
         end
 
-        local blockType
+        local blockType, isExact
         if b.t then
             blockType = b.t
+            isExact = true
         else
             blockType = slotMap[b.slot] or slotMap.primary or "wall"
         end
@@ -106,6 +107,7 @@ function TL.toBlueprint(tmpl, homeX, homeZ, npc)
             action = "place",
             x = wx, y = wy, z = wz,
             need = blockType,
+            exactType = isExact,  -- true = match exact item type, not building_type
             -- Preserve Minecraft block metadata for rendering
             facing = b.f,
             half = b.h,

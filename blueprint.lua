@@ -272,7 +272,7 @@ function BP.skipIfDone(bp, world)
             -- Verify correct type
             local items = require("items")
             local typeMatch = false
-            if s.action == "place_furniture" then
+            if s.action == "place_furniture" or s.exactType then
                 typeMatch = (block.itemType == s.need)
             else
                 local def = items.get(block.itemType)

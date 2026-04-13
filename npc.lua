@@ -377,20 +377,17 @@ function NPC:_scoreContinueBuild()
 end
 
 function NPC:_scoreHelpBuild()
-    if self.blueprint and not self.blueprint.completed then return 0 end
     if self.helpingBlueprint and not self.helpingBlueprint.completed then return 0 end
-    -- Check for help_needed markers (indirect communication)
-    local helpMarkers = self.world:getMarkersNear(self.gx, self.gz, 15, "help_needed")
-    local markerBonus = #helpMarkers > 0 and 15 or 0
+    -- Look for ANY NPC with unfinished blueprint (collective consciousness, no range limit)
     for _, other in ipairs(self.allNpcs) do
         if other ~= self and other.blueprint and not other.blueprint.completed then
-            local dist = math.abs(self.gx - other.gx) + math.abs(self.gz - other.gz)
-            if dist <= 15 then
-                local base = 75 + markerBonus
-                if self.traits.social then base = base * 1.4 end
-                if self.traits.shy then base = base * 0.5 end
-                return base
-            end
+            -- Help others even if we have our own completed blueprint
+            -- Only skip if we have our own UNFINISHED blueprint
+            if self.blueprint and not self.blueprint.completed then return 0 end
+            local base = 95  -- very high: help others before building own
+            if self.traits.social then base = base * 1.2 end
+            if self.traits.shy then base = base * 0.7 end
+            return base
         end
     end
     return 0
@@ -398,6 +395,12 @@ end
 
 function NPC:_scoreBuildShelter()
     if self:_hasShelter() then return 0 end
+    -- Collective consciousness: don't start own build if someone else needs help
+    for _, other in ipairs(self.allNpcs) do
+        if other ~= self and other.blueprint and not other.blueprint.completed then
+            return 0  -- defer own build, help them first
+        end
+    end
     local tempR = self.temperature / self.cfg.TEMP_MAX
     if tempR >= 0.8 then return 0 end
     return (1 - tempR) * 100
@@ -663,36 +666,26 @@ function NPC:_execHelpBuild()
     end
 end
 
--- TEST MODE: all NPCs build one shared Small Survival House, all-stone
-local sharedTestBlueprint = nil
-
 function NPC:_execBuildShelter()
     if not self.blueprint then
-        local totalMats = (self.resourceCache["wall"] or 0) + (self.resourceCache["wood"] or 0)
-            + (self.resourceCache["roof"] or 0) + (self.resourceCache["glass"] or 0)
-        if totalMats < 5 then return end
-
-        -- TEST: all NPCs share one blueprint
-        if not sharedTestBlueprint then
-            -- Force "Small Survival House" template, all stone
-            for _, tmpl in ipairs(TemplateLib.all) do
-                if tmpl.name:find("Survival") then
-                    self.buildStyle = {primary = "wall", secondary = "wall"}  -- all stone
-                    local cx = math.floor(self.cfg.GRID / 2)
-                    local cz = math.floor(self.cfg.GRID / 2)
-                    sharedTestBlueprint = TemplateLib.toBlueprint(tmpl, cx, cz, self)
-                    log.write("build", "CREATED shared blueprint: %s at (%d,%d) steps:%d",
-                        tmpl.name, cx, cz, #sharedTestBlueprint.steps)
-                    break
-                end
+        -- Count ALL building materials available
+        local totalMats = 0
+        for itemType, count in pairs(self.resourceCache) do
+            local def = self.items.get(itemType)
+            if def and def.category == "building" then
+                totalMats = totalMats + count
             end
         end
+        if totalMats < 5 then return end
 
-        if sharedTestBlueprint then
-            self.blueprint = sharedTestBlueprint
-            self.homeX = sharedTestBlueprint.homeX
-            self.homeZ = sharedTestBlueprint.homeZ
-            log.write("build", "%s joined shared build (%d steps)", self.name, #sharedTestBlueprint.steps)
+        -- Always build Armorer House
+        for _, tmpl in ipairs(TemplateLib.all) do
+            if tmpl.name:find("Armorer") then
+                self.blueprint = TemplateLib.toBlueprint(tmpl, self.homeX, self.homeZ, self)
+                log.write("build", "%s starting %s at (%d,%d) steps:%d",
+                    self.name, tmpl.name, self.homeX, self.homeZ, #self.blueprint.steps)
+                break
+            end
         end
     end
     self:_pushBuildTask()
@@ -790,7 +783,7 @@ function NPC:_pushBuildTask()
         if self.carriedBlock then
             local def = self.items.get(self.carriedBlock.itemType)
             local matches = false
-            if step.action == "place_furniture" then
+            if step.action == "place_furniture" or step.exactType then
                 matches = (self.carriedBlock.itemType == step.need)
             else
                 matches = (def and def.building_type == step.need)
@@ -802,7 +795,7 @@ function NPC:_pushBuildTask()
             self.task = {type = "place_block", target = {x = step.x, z = step.z, y = step.y}, timer = 0, step = step}
         else
             local block
-            if step.action == "place_furniture" then
+            if step.action == "place_furniture" or step.exactType then
                 block = self.world:nearestLoose(self.gx, self.gz, step.need)
             else
                 block = self.world:nearestLooseBuilding(self.gx, self.gz, step.need)
@@ -869,7 +862,7 @@ function NPC:_doPlaceBlock(dt)
                 needClear = true
             elseif existing.state == "placed" then
                 local def = self.items.get(existing.itemType)
-                if self.task.step.action == "place_furniture" then
+                if self.task.step.action == "place_furniture" or self.task.step.exactType then
                     needClear = (existing.itemType ~= self.task.step.need)
                 else
                     needClear = not (def and def.building_type == self.task.step.need)

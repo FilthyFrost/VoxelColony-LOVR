@@ -169,38 +169,12 @@ function lovr.load()
     TemplateLib.init()
     log.write("main", "Game loaded. GRID=%d templates:%d", Config.GRID, #TemplateLib.all)
 
-    -- PRE-BUILD: place Small Survival House directly in world for visual inspection
+    -- Camera: overview of map center
     local cx = math.floor(Config.GRID / 2)
     local cz = math.floor(Config.GRID / 2)
-    for _, tmpl in ipairs(TemplateLib.all) do
-        if tmpl.name:find("Armorer") then
-            local originX = cx - math.floor(tmpl.w / 2)
-            local originZ = cz - math.floor(tmpl.d / 2)
-            local placed = 0
-            for _, b in ipairs(tmpl.blocks) do
-                local wx = originX + b.x
-                local wz = originZ + b.z
-                local mat = b.t or "wall"
-                local block = world:addBlock(wx, b.y, wz, mat, "placed")
-                if block then
-                    block.noGravity = true  -- pre-built blocks don't fall
-                    block.facing = b.f
-                    block.half = b.h
-                    block.shape = b.s
-                    block.open = b.o
-                    placed = placed + 1
-                end
-            end
-            log.write("main", "PRE-BUILT '%s' at (%d,%d): %d/%d blocks placed",
-                tmpl.name, originX, originZ, placed, #tmpl.blocks)
-            break
-        end
-    end
-
-    -- Camera: look down at the pre-built house
     cam.x = cx
-    cam.y = 20
-    cam.z = cz - 15
+    cam.y = 25
+    cam.z = cz - 20
     cam.yaw = 0
     cam.pitch = -0.5
     npcs[#npcs + 1] = NPC.new(Config, world, Items, cx, cz, npcs)
@@ -210,45 +184,12 @@ function lovr.load()
 end
 
 
--- Auto-test
-local autoTestDone = false
-local autoTestTimer = 0.1  -- drop materials almost immediately
-
 function lovr.update(dt)
     local ok, err = pcall(function()
     gameTime = gameTime + dt
     log.setTime(gameTime)
     log.perfFrame(dt)
     world:update(dt)
-
-    -- Auto-test material drop
-    if not autoTestDone then
-        autoTestTimer = autoTestTimer - dt
-        if autoTestTimer <= 0 then
-            autoTestDone = true
-            local cx = math.floor(Config.GRID / 2)
-            local cz = math.floor(Config.GRID / 2)
-            local used = {}
-            local function drop(itemType, delay)
-                for _ = 0, 100 do
-                    local gx = cx + math.random(-15, 15)
-                    local gz = cz + math.random(-15, 15)
-                    local k = gx .. "," .. gz
-                    if not used[k] then
-                        used[k] = true
-                        fallingItems[#fallingItems + 1] = {gx = gx, gz = gz, y = Config.FALL_START_Y + delay, targetY = 0, itemType = itemType}
-                        return
-                    end
-                end
-            end
-            -- Drop mixed materials for template building
-            for i = 0, 149 do drop("wall", i * 0.02) end
-            for i = 0, 249 do drop("wood", 3 + i * 0.02) end
-            for i = 0, 49 do drop("glass", 8 + i * 0.02) end
-            for i = 0, 49 do drop("roof", 9 + i * 0.02) end
-            for i = 0, 14 do drop("apple", 10 + i * 0.1) end
-        end
-    end
 
     -- Falling items
     for i = #fallingItems, 1, -1 do
