@@ -4,7 +4,7 @@ local C = {}
 
 C.GRID = 96
 C.DAY_LEN = 300.0              -- 5 minutes per cycle
-C.NIGHT_START = 0.55
+C.NIGHT_START = 0.75            -- night is 1/3 of day (75%-95% = 20% of cycle)
 C.NIGHT_END = 0.95
 
 C.NPC_COUNT = 1                -- start with 1 NPC

@@ -928,16 +928,17 @@ function NPC:_doFetchEat(dt)
 end
 
 function NPC:_doGoHome(dt)
-    if self:_adjacentTo(self.homeX, self.homeZ) or (self.gx == self.homeX and self.gz == self.homeZ) then
-        -- Arrived home: go to sleep (night behavior)
+    -- Try to get INTO the house (not just adjacent to door)
+    if self.gx == self.homeX and self.gz == self.homeZ then
+        -- Inside home: sleep if night
         if self.world.isNight then
             self.sleeping = true
             self.sleepPos = {x = self.gx, z = self.gz}
             local bed = self:_findNearbyBed()
             if bed then
-                self.sleepQuality = 2  -- bed
+                self.sleepQuality = 2
             elseif self.world:hasRoof(self.gx, self.gz) then
-                self.sleepQuality = 1  -- indoor floor
+                self.sleepQuality = 1
             else
                 self.sleepQuality = 0
                 self.outdoorSleepCount = self.outdoorSleepCount + 1
@@ -948,6 +949,7 @@ function NPC:_doGoHome(dt)
             self:_completeTask()
         end
     else
+        -- Walk toward home interior
         self:_moveTo(self.homeX, 0, self.homeZ, dt)
     end
 end
