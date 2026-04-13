@@ -712,9 +712,11 @@ function lovr.keypressed(key)
     end
     if key == "return" then dropItem() end
     if key == "n" then
+        if #npcs >= 10 then return end  -- max 10 NPCs (prevent crash from too many)
         local gx, gz = cam:getLookTarget()
         if gx then
             npcs[#npcs + 1] = NPC.new(Config, world, Items, gx, gz, npcs)
+            log.write("main", "Spawned %s at (%d,%d) total:%d", npcs[#npcs].name, gx, gz, #npcs)
         end
     end
     if key == "q" then lovr.event.quit() end
