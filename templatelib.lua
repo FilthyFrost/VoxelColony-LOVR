@@ -7,6 +7,29 @@ local TL = {}
 -- All available templates (loaded on init)
 TL.all = {}
 
+-- Block type normalization: raw Minecraft names → game-registered types
+-- Applied in toBlueprint so ALL templates auto-convert regardless of source
+local TYPE_MAP = {
+    oak_door = "door", white_bed = "bed", yellow_bed = "bed", red_bed = "bed",
+    dirt = "cobblestone", grass_block = "cobblestone", farmland = "cobblestone",
+    white_terracotta = "cobblestone", terracotta = "cobblestone", clay = "cobblestone",
+    dirt_path = "cobblestone", smooth_stone = "cobblestone",
+    wall_torch = "torch", stripped_oak_wood = "stripped_oak_log",
+    white_wool = "oak_planks", yellow_wool = "oak_planks",
+    iron_bars = "glass_pane",
+    yellow_stained_glass_pane = "glass_pane", white_stained_glass_pane = "glass_pane",
+    water_cauldron = "cauldron", oak_leaves = "leaves",
+    brewing_stand = "crafting_table", smithing_table = "crafting_table",
+    furnace = "cobblestone",
+}
+local SKIP_TYPES = {
+    white_carpet = true, yellow_carpet = true, green_carpet = true, red_carpet = true,
+    poppy = true, dandelion = true, potted_dandelion = true, rose_bush = true,
+    wheat = true, short_grass = true, tall_grass = true,
+    oak_pressure_plate = true, stone_pressure_plate = true,
+    water = true, lava = true, air = true,
+}
+
 function TL.init()
     local names = {
         -- Original templates
@@ -135,6 +158,10 @@ function TL.toBlueprint(tmpl, homeX, homeZ, npc)
         else
             blockType = slotMap[b.slot] or slotMap.primary or "wall"
         end
+
+        -- Normalize: skip decorative blocks, map raw MC names to game types
+        if SKIP_TYPES[blockType] then goto nextBlock end
+        blockType = TYPE_MAP[blockType] or blockType
 
         local posKey = wx .. "," .. wy .. "," .. wz
         if not stepsByPos[posKey] then

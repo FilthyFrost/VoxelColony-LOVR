@@ -15,6 +15,7 @@ function W.new(config, items)
     self.time = 0
     self.isNight = false
     self.markers = {}          -- communication markers
+    self.renderDirty = true    -- GPU instance buffer needs rebuild
     return self
 end
 
@@ -55,6 +56,7 @@ function W:update(dt)
                             self.occupied[newKey] = b
                         end
                         fell = true
+                        self.renderDirty = true
                     end
                 end
             end
@@ -105,12 +107,12 @@ function W:addBlock(gx, gy, gz, itemType, state)
     self.blocks[#self.blocks+1] = block
     if st ~= "carried" then
         self.occupied[k] = block
-        -- Bed: also occupy (gx, gy, gz+1)
         if itemType == "bed" and st == "placed" then
             local k2 = self:_key(gx, gy, gz + 1)
             if not self.occupied[k2] then self.occupied[k2] = block end
         end
     end
+    self.renderDirty = true
     return block
 end
 
@@ -124,6 +126,7 @@ function W:_removeAt(idx)
         if self.occupied[k2] == b then self.occupied[k2] = nil end
     end
     table.remove(self.blocks, idx)
+    self.renderDirty = true
 end
 
 function W:removeBlock(block)

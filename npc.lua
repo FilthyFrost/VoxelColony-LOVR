@@ -12,6 +12,7 @@ pcall(function() log = require("debuglog") end)
 
 local NPC = {}
 NPC.__index = NPC
+NPC.buildQueue = nil  -- set from main.lua: shared global build queue
 
 local TASK_TIMEOUT = 20
 
@@ -154,6 +155,20 @@ end
 function NPC:update(dt)
     if self.dead then return end
 
+    -- Clean up orphan dynamic blueprints (not from template system)
+    if self.blueprint and not self.blueprint.templateName then
+        self.blueprint = nil
+        self.buildStep = nil
+        self.buildStepBp = nil
+        self.buildStalled = false
+    end
+
+    -- MVP MODE: lock vitals so NPCs never die during testing
+    self.hp = self.cfg.HP_MAX
+    self.hunger = self.cfg.HUNGER_MAX
+    self.stamina = self.cfg.STAMINA_MAX
+    self.temperature = self.cfg.TEMP_MAX
+
     self.hunger = math.max(self.hunger - self.cfg.HUNGER_DECAY * dt, 0)
     local indoors = self.world:hasRoof(self.gx, self.gz)
         and self.shelterVerified and self.blueprint
@@ -266,14 +281,14 @@ function NPC:update(dt)
         local oldCache = self.resourceCache
         self.resourceCache = self.world:countLooseByType()
         self.resourceCacheTimer = 3
-        -- Reset buildStalled if new materials appeared (player dropped blocks)
+        -- Reset buildStalled if total loose material count increased
         if self.buildStalled then
-            for k, v in pairs(self.resourceCache) do
-                if v > 0 and (not oldCache[k] or oldCache[k] == 0) then
-                    self.buildStalled = false
-                    self.thinkTimer = 0  -- re-think immediately
-                    break
-                end
+            local oldTotal, newTotal = 0, 0
+            for _, v in pairs(oldCache) do oldTotal = oldTotal + v end
+            for _, v in pairs(self.resourceCache) do newTotal = newTotal + v end
+            if newTotal > oldTotal then
+                self.buildStalled = false
+                self.thinkTimer = 0
             end
         end
     end
@@ -454,7 +469,12 @@ function NPC:_scoreContinueBuild()
         -- If build is stalled (no materials), drop to very low priority
         -- so NPC does other things (idle, socialize, wander) instead of
         -- burning CPU scanning 169 steps every 5 seconds
-        if self.buildStalled then return 8 end
+        if self.buildStalled then
+            -- Auto-reset after 30 seconds (retry in case materials arrived)
+            local elapsed = (self.world.time - (self.buildStalledTime or 0)) % self.cfg.DAY_LEN
+            if elapsed > 30 then self.buildStalled = false end
+            if self.buildStalled then return 8 end
+        end
         local base = self.helpingBlueprint and 88 or 90
         if self.traits.diligent then base = base * 1.3 end
         if self.traits.lazy then base = base * 0.6 end
@@ -465,38 +485,42 @@ end
 
 function NPC:_scoreHelpBuild()
     if self.helpingBlueprint and not self.helpingBlueprint.completed then return 0 end
-    -- Look for ANY NPC with unfinished blueprint (collective consciousness)
-    for _, other in ipairs(self.allNpcs) do
-        if other ~= self and other.blueprint and not other.blueprint.completed then
-            if self.blueprint and not self.blueprint.completed then return 0 end
-            -- DF-inspired: reduce score per additional helper already on this blueprint
-            local helperCount = 0
-            for _, h in ipairs(self.allNpcs) do
-                if h ~= self and not h.dead and h.helpingBlueprint == other.blueprint then
-                    helperCount = helperCount + 1
+    -- Check buildQueue for the first active (started but not complete) job
+    local queue = NPC.buildQueue
+    if queue then
+        for _, job in ipairs(queue) do
+            if job.blueprint and not job.blueprint.completed then
+                if self.blueprint and not self.blueprint.completed then return 0 end
+                local helperCount = 0
+                for _, h in ipairs(self.allNpcs) do
+                    if h ~= self and not h.dead and h.helpingBlueprint == job.blueprint then
+                        helperCount = helperCount + 1
+                    end
                 end
+                local base = 95 - helperCount * 12
+                if base < 30 then base = 30 end
+                return base
             end
-            local base = 95 - helperCount * 12  -- each helper reduces appeal
-            if base < 30 then base = 30 end
-            if self.traits.social then base = base * 1.2 end
-            if self.traits.shy then base = base * 0.7 end
-            return base
         end
     end
+    -- No fallback: only help buildQueue blueprints
     return 0
 end
 
 function NPC:_scoreBuildShelter()
-    if self:_hasShelter() then return 0 end
-    -- Collective consciousness: don't start own build if someone else needs help
-    for _, other in ipairs(self.allNpcs) do
-        if other ~= self and other.blueprint and not other.blueprint.completed then
-            return 0  -- defer own build, help them first
+    -- Check buildQueue for pending jobs
+    local queue = NPC.buildQueue
+    if not queue or #queue == 0 then return 0 end
+    -- Find the first job that needs work
+    for _, job in ipairs(queue) do
+        if not job.blueprint or not job.blueprint.completed then
+            -- There's work to do — score high
+            -- But defer if another NPC already started it (help_build handles that)
+            if job.blueprint then return 0 end  -- already started, let help_build handle
+            return 85  -- high: start the next queued build
         end
     end
-    local tempR = self.temperature / self.cfg.TEMP_MAX
-    if tempR >= 0.8 then return 0 end
-    return (1 - tempR) * 100
+    return 0  -- all jobs complete
 end
 
 function NPC:_scoreEat()
@@ -530,16 +554,11 @@ function NPC:_scoreStockpile()
 end
 
 function NPC:_scoreFurnishHome()
-    -- Disabled for template builds: template defines the complete building
-    if self.blueprint and self.blueprint.templateName then return 0 end
-    return 0
+    return -100  -- disabled: templates define complete buildings
 end
 
 function NPC:_scoreBuildBigger()
-    -- Disabled for template-based building: Armorer House is the final design.
-    -- build_bigger generates a dynamic room that conflicts with the template.
-    if self.blueprint and self.blueprint.templateName then return 0 end
-    return 0
+    return -100  -- disabled: dynamic rooms conflict with template system
 end
 
 function NPC:_scoreSleep()
@@ -737,50 +756,117 @@ function NPC:_execSleep()
 end
 
 function NPC:_execHelpBuild()
-    local bestDist = math.huge
-    local bestBp = nil
-    for _, other in ipairs(self.allNpcs) do
-        if other ~= self and other.blueprint and not other.blueprint.completed then
-            local dist = math.abs(self.gx - other.gx) + math.abs(self.gz - other.gz)
-            if dist < bestDist then bestDist = dist; bestBp = other.blueprint end
+    -- Clear stale helping reference
+    if self.helpingBlueprint and self.helpingBlueprint.completed then
+        self.helpingBlueprint = nil
+    end
+
+    -- Priority: help the first active job in buildQueue (global queue order)
+    local queue = NPC.buildQueue
+    if queue then
+        for _, job in ipairs(queue) do
+            if job.blueprint and not job.blueprint.completed then
+                self.helpingBlueprint = job.blueprint
+                self.buildStalled = false
+                self:_pushBuildTask()
+                return
+            end
         end
     end
-    if bestBp then
-        self.helpingBlueprint = bestBp
-        self:_pushBuildTask()
-    end
+    -- No fallback: only help buildQueue blueprints (never help dynamic/orphan blueprints)
 end
 
 function NPC:_execBuildShelter()
+    -- Clear any old/completed blueprint so we can take new queue jobs
+    if self.blueprint and self.blueprint.completed then
+        self.blueprint = nil
+    end
+
     if not self.blueprint then
-        -- GUARD: don't start a new build if ANY NPC has an unfinished one
-        for _, other in ipairs(self.allNpcs) do
-            if other ~= self and other.blueprint and not other.blueprint.completed then
-                return  -- help them instead
-            end
-        end
+        local queue = NPC.buildQueue
+        if not queue then return end
 
-        -- Count ALL building materials available
-        local totalMats = 0
-        for itemType, count in pairs(self.resourceCache) do
-            local def = self.items.get(itemType)
-            if def and def.category == "building" then
-                totalMats = totalMats + count
-            end
-        end
-        if totalMats < 5 then return end
-
-        -- Always build Armorer House
-        for _, tmpl in ipairs(TemplateLib.all) do
-            if tmpl.name:find("Armorer") then
-                self.blueprint = TemplateLib.toBlueprint(tmpl, self.homeX, self.homeZ, self)
+        -- Find the first queued job that hasn't been started yet
+        for _, job in ipairs(queue) do
+            if not job.blueprint then
+                local bx, bz = self:_findBuildSite(job.template)
+                job.blueprint = TemplateLib.toBlueprint(job.template, bx, bz, self)
+                self.blueprint = job.blueprint
+                self.homeX = job.blueprint.homeX
+                self.homeZ = job.blueprint.homeZ
+                self.buildStalled = false
+                self.helpingBlueprint = nil
                 log.write("build", "%s starting %s at (%d,%d) steps:%d",
-                    self.name, tmpl.name, self.homeX, self.homeZ, #self.blueprint.steps)
+                    self.name, job.template.name, bx, bz, #job.blueprint.steps)
                 break
             end
         end
     end
-    self:_pushBuildTask()
+    if self.blueprint then
+        self:_pushBuildTask()
+    end
+end
+
+-- Find a suitable build site for a template
+-- First building: map center. Subsequent: near existing buildings with 5-block gap
+function NPC:_findBuildSite(tmpl)
+    local grid = self.cfg.GRID
+    local tw, td = tmpl.w, tmpl.d
+
+    -- Collect existing building footprints
+    local buildings = {}
+    local queue = NPC.buildQueue
+    if queue then
+        for _, job in ipairs(queue) do
+            if job.blueprint then
+                buildings[#buildings + 1] = {
+                    x = job.blueprint.originX,
+                    z = job.blueprint.originZ,
+                    w = job.blueprint.width,
+                    d = job.blueprint.depth,
+                }
+            end
+        end
+    end
+
+    -- Check if a position overlaps any existing building (with gap)
+    local gap = 5
+    local function overlaps(ox, oz)
+        for _, b in ipairs(buildings) do
+            if ox + tw + gap > b.x and ox < b.x + b.w + gap
+               and oz + td + gap > b.z and oz < b.z + b.d + gap then
+                return true
+            end
+        end
+        return false
+    end
+
+    -- First building: map center
+    if #buildings == 0 then
+        local cx = math.floor(grid / 2) - math.floor(tw / 2)
+        local cz = math.floor(grid / 2) - math.floor(td / 2)
+        return cx + math.floor(tw / 2), cz + math.floor(td / 2)
+    end
+
+    -- Subsequent: try random positions near existing buildings
+    local ref = buildings[math.random(#buildings)]
+    local dirs = {{1,0}, {-1,0}, {0,1}, {0,-1}}
+    for attempt = 1, 20 do
+        local dir = dirs[math.random(#dirs)]
+        local dist = math.max(tw, td) + gap + math.random(0, 5)
+        local ox = ref.x + dir[1] * dist
+        local oz = ref.z + dir[2] * dist
+        -- Clamp to grid
+        ox = math.max(2, math.min(grid - tw - 2, ox))
+        oz = math.max(2, math.min(grid - td - 2, oz))
+        if not overlaps(ox, oz) then
+            return ox + math.floor(tw / 2), oz + math.floor(td / 2)
+        end
+    end
+
+    -- Fallback: random position
+    return math.random(10, grid - tw - 10) + math.floor(tw / 2),
+           math.random(10, grid - td - 10) + math.floor(td / 2)
 end
 
 function NPC:_execFurnishHome()
@@ -964,12 +1050,19 @@ function NPC:_pushBuildTask()
     local step = nil
     local stepIdx = nil
     local noMaterialStep = nil
+    local hasClaimedWithMat = false  -- tracks if any MAT_OK step was skipped due to claim
     local bestScore = -1
     for i = 1, #bp.steps do
         local s = bp.steps[i]
         local skip = false
         if self:_isStepDone(s) then skip = true end
-        if not skip and claimed[i] then skip = true end
+        if not skip and claimed[i] then
+            -- Check if this claimed step has materials (for stall classification)
+            if (s.action == "place" or s.action == "place_furniture") and self:_hasMaterialFor(s) then
+                hasClaimedWithMat = true
+            end
+            skip = true
+        end
         if not skip and (s.action == "place" or s.action == "place_furniture") then
             if not self:_hasMaterialFor(s) then
                 if not noMaterialStep then noMaterialStep = s end
@@ -982,7 +1075,7 @@ function NPC:_pushBuildTask()
             -- + distance bonus (prefer nearby steps)
             local dist = math.abs(self.gx - s.x) + math.abs(self.gz - s.z)
             local layerPenalty = (s.layer or s.y) * 100  -- strongly prefer lower layers
-            local score = 1000 - layerPenalty - dist
+            local score = 10000 - layerPenalty - dist
             if score > bestScore then
                 bestScore = score
                 step = s
@@ -1027,16 +1120,46 @@ function NPC:_pushBuildTask()
                 self.world:addMarker("home_here", self.homeX, self.homeZ, self.npcId)
             end
         else
-            -- Not complete but no executable step — stalled (missing materials)
+            -- Not complete but no executable step.
+            -- Distinguish: "all claimed but have materials" vs "genuinely no materials"
+            if hasClaimedWithMat then
+                -- Steps exist with materials, just temporarily claimed by other NPCs.
+                -- Short retry — they'll release claims in seconds.
+                self.task = nil
+                self.thinkTimer = 2
+                return
+            end
+
+            -- Genuinely stalled — no materials for remaining steps
             self.buildStalled = true
+            self.buildStalledTime = self.world.time
+            -- DIAGNOSTIC: dump ALL undone steps (first time only per stall cycle)
+            if not self._stallDumped then
+                self._stallDumped = true
+                local undone = {}
+                for i = 1, #bp.steps do
+                    local s = bp.steps[i]
+                    if not self:_isStepDone(s) then
+                        local hasMat = self:_hasMaterialFor(s) and "MAT_OK" or "NO_MAT"
+                        undone[#undone+1] = string.format("  step%d: %s at(%d,%d,%d) %s",
+                            i, s.need, s.x, s.y, s.z, hasMat)
+                    end
+                end
+                log.write("build", "%s STALL DUMP (%d undone of %d):\n%s",
+                    self.name, #undone, #bp.steps, table.concat(undone, "\n"))
+            end
             if noMaterialStep then
-                log.write("build", "%s stalled: need %s", self.name, noMaterialStep.need)
+                local stepInfo = string.format("need=%s exact=%s at(%d,%d,%d) bp=%s steps=%d",
+                    noMaterialStep.need, tostring(noMaterialStep.exactType),
+                    noMaterialStep.x or 0, noMaterialStep.y or 0, noMaterialStep.z or 0,
+                    bp.templateName or "dynamic", #bp.steps)
+                log.write("build", "%s stalled: %s", self.name, stepInfo)
                 self:_setThought("need_wall"); self.thoughtTimer = 5
                 self.world:addMarker("help_needed", self.gx, self.gz, self.npcId)
             end
         end
         self.task = nil
-        self.thinkTimer = 20  -- long cooldown when stalled (don't waste CPU scanning)
+        self.thinkTimer = 20
         return
     end
 
@@ -1070,6 +1193,10 @@ function NPC:_assignStepTask(bp, step)
                 self.task = {type = "fetch_block", target = block, timer = 0, step = step}
             else
                 -- Material existed during scan but now all reserved/gone
+                if step.y >= 9 then
+                    log.write("build", "%s ASSIGN_FAIL: no unreserved %s for step at(%d,%d,%d)",
+                        self.name, step.need, step.x, step.y, step.z)
+                end
                 self.buildStep = nil
                 self.buildStepBp = nil
                 self.task = nil
@@ -1107,6 +1234,7 @@ function NPC:_doFetchBlock(dt)
         local k = self.world:_key(block.gx, block.gy, block.gz)
         if self.world.occupied[k] == block then self.world.occupied[k] = nil end
         self.carriedBlock = block
+        self.world.renderDirty = true  -- block visually disappears from ground
         self:_completeTask()
     else
         self:_moveToReach(block.gx, block.gy, block.gz, dt)
@@ -1145,6 +1273,13 @@ function NPC:_doPlaceBlock(dt)
         -- Close enough to the building — place the block remotely
         local k = self.world:_key(tgt.x, tgt.y, tgt.z)
         local existing = self.world.occupied[k]
+        -- DIAGNOSTIC: log placement attempts for high Y blocks
+        if tgt.y >= 9 then
+            log.write("build", "%s PLACE_ATTEMPT %s at(%d,%d,%d) existing=%s carry=%s",
+                self.name, self.task.step.need, tgt.x, tgt.y, tgt.z,
+                existing and (existing.itemType.."/"..existing.state) or "nil",
+                self.carriedBlock and self.carriedBlock.itemType or "nil")
+        end
         if existing then
             local needClear = false
             if existing.state == "loose" then
@@ -1182,7 +1317,14 @@ function NPC:_doPlaceBlock(dt)
             end
         end
         if not placed then
-            self:_dropBlockNearBuilding()
+            log.write("build", "%s PLACE_FAILED %s at(%d,%d,%d) occupied=%s",
+                self.name, self.task.step.need, tgt.x, tgt.y, tgt.z,
+                self.world.occupied[k] and self.world.occupied[k].itemType or "nil")
+            -- Recover block using saved carryType (self.carriedBlock is already nil)
+            local bp2 = self.helpingBlueprint or self.blueprint
+            local fx, fz = bp2 and self:_findGroundOutsideBuilding(bp2)
+                or self.world:_findFreeGround(self.gx, self.gz)
+            if fx then self.world:addBlock(fx, 0, fz, carryType, "loose") end
             self:_failTask()
             return
         end
@@ -1194,12 +1336,29 @@ function NPC:_doPlaceBlock(dt)
         self.buildStepBp = nil
         self:_completeTask()
     else
-        -- Walk toward the building perimeter (door position, always walkable)
-        local walkX = bp and bp.doorX or tgt.x
-        local walkZ = bp and (bp.doorZ - 1) or tgt.z  -- one step outside door
-        -- Clamp to grid
-        if walkX < 0 then walkX = 0 end
-        if walkZ < 0 then walkZ = 0 end
+        -- Walk to nearest point on building exterior (works for any door position)
+        local walkX, walkZ = tgt.x, tgt.z
+        if bp then
+            local ox, oz, bw, bd = bp.originX, bp.originZ, bp.width, bp.depth
+            local bestDist = math.huge
+            -- Check all four exterior edges, find closest point to NPC
+            for x = ox, ox + bw - 1 do
+                -- South edge
+                local d = math.abs(self.gx - x) + math.abs(self.gz - (oz - 1))
+                if d < bestDist then walkX, walkZ, bestDist = x, oz - 1, d end
+                -- North edge
+                d = math.abs(self.gx - x) + math.abs(self.gz - (oz + bd))
+                if d < bestDist then walkX, walkZ, bestDist = x, oz + bd, d end
+            end
+            for z = oz, oz + bd - 1 do
+                -- West edge
+                local d = math.abs(self.gx - (ox - 1)) + math.abs(self.gz - z)
+                if d < bestDist then walkX, walkZ, bestDist = ox - 1, z, d end
+                -- East edge
+                d = math.abs(self.gx - (ox + bw)) + math.abs(self.gz - z)
+                if d < bestDist then walkX, walkZ, bestDist = ox + bw, z, d end
+            end
+        end
         self:_moveTo(walkX, 0, walkZ, dt)
         if self.task.timer > 15 then
             self:_failTask()
@@ -1293,6 +1452,7 @@ function NPC:_doStockpile(dt)
             local k = self.world:_key(block.gx, block.gy, block.gz)
             if self.world.occupied[k] == block then self.world.occupied[k] = nil end
             self.carriedBlock = block
+            self.world.renderDirty = true
         else
             self:_moveToReach(block.gx, block.gy, block.gz, dt)
         end

@@ -13,6 +13,10 @@ local TemplateLib = require("templatelib")
 
 local world, npcs, fallingItems, tex, hudFont
 local selectedIdx = 1
+local templateIdx = 1
+local uiMode = "block"  -- "block", "template", or "preview"
+local buildQueue = {}    -- global build queue: {template, blueprint, materialPos}
+local previewBuildings = {}  -- preview mode placed buildings (for X to delete)
 local gameTime = 0
 
 -- Debug logging: use shared module so NPC/world logs get correct timestamps
@@ -140,6 +144,43 @@ function lovr.load()
 
     log.init()
     TemplateLib.init()
+    NPC.buildQueue = buildQueue
+
+    -- GPU Instancing: create cube mesh + shader for batched rendering
+    local cubeVerts = {
+        {-0.5,-0.5,-0.5, 0,0,-1, 0,1}, { 0.5,-0.5,-0.5, 0,0,-1, 1,1}, { 0.5,0.5,-0.5, 0,0,-1, 1,0}, {-0.5,0.5,-0.5, 0,0,-1, 0,0},
+        { 0.5,-0.5, 0.5, 0,0, 1, 0,1}, {-0.5,-0.5, 0.5, 0,0, 1, 1,1}, {-0.5,0.5, 0.5, 0,0, 1, 1,0}, { 0.5,0.5, 0.5, 0,0, 1, 0,0},
+        {-0.5, 0.5,-0.5, 0,1, 0, 0,1}, { 0.5, 0.5,-0.5, 0,1, 0, 1,1}, { 0.5,0.5, 0.5, 0,1, 0, 1,0}, {-0.5,0.5, 0.5, 0,1, 0, 0,0},
+        {-0.5,-0.5, 0.5, 0,-1,0, 0,1}, { 0.5,-0.5, 0.5, 0,-1,0, 1,1}, { 0.5,-0.5,-0.5, 0,-1,0, 1,0}, {-0.5,-0.5,-0.5, 0,-1,0, 0,0},
+        { 0.5,-0.5,-0.5, 1,0, 0, 0,1}, { 0.5,-0.5, 0.5, 1,0, 0, 1,1}, { 0.5,0.5, 0.5, 1,0, 0, 1,0}, { 0.5,0.5,-0.5, 1,0, 0, 0,0},
+        {-0.5,-0.5, 0.5,-1,0, 0, 0,1}, {-0.5,-0.5,-0.5,-1,0, 0, 1,1}, {-0.5,0.5,-0.5,-1,0, 0, 1,0}, {-0.5,0.5, 0.5,-1,0, 0, 0,0},
+    }
+    cubeMesh = lovr.graphics.newMesh(cubeVerts)
+    cubeMesh:setIndices({
+        1,2,3, 3,4,1,  5,6,7, 7,8,5,  9,10,11, 11,12,9,
+        13,14,15, 15,16,13,  17,18,19, 19,20,17,  21,22,23, 23,24,21,
+    })
+
+    instanceShader = lovr.graphics.newShader([[
+        buffer InstanceData { vec4 positions[]; };
+        vec4 lovrmain() {
+            vec4 p = positions[InstanceIndex];
+            mat4 m = mat4(
+                p.w, 0, 0, 0,
+                0, p.w, 0, 0,
+                0, 0, p.w, 0,
+                p.x, p.y, p.z, 1
+            );
+            return Projection * View * m * VertexPosition;
+        }
+    ]], [[
+        vec4 lovrmain() {
+            return DefaultColor * Color * getPixel(ColorTexture, UV);
+        }
+    ]])
+
+    instanceGroups = {}  -- rebuilt when world.renderDirty
+
     log.write("main", "Game loaded. GRID=%d templates:%d", Config.GRID, #TemplateLib.all)
 
     -- Camera: overview of map center
@@ -152,64 +193,18 @@ function lovr.load()
     cam.pitch = -0.5
     npcs[#npcs + 1] = NPC.new(Config, world, Items, cx, cz, npcs)
 
-    -- Drop exactly the materials needed for one Armorer House
-    for _, tmpl in ipairs(TemplateLib.all) do
-        if tmpl.name:find("Armorer") then
-            -- Count needed materials WITH deduplication (same as toBlueprint)
-            local doorX = tmpl.doorPos and tmpl.doorPos.x or math.floor(tmpl.w / 2)
-            local doorZ = tmpl.doorPos and tmpl.doorPos.z or 0
-            local byPos = {}  -- dedup: same position → last block wins
-            for _, b in ipairs(tmpl.blocks) do
-                if not (b.x == doorX and b.z == doorZ and b.y < 2) then
-                    byPos[b.x..","..b.y..","..b.z] = b.t or "wall"
-                end
-            end
-            local needed = {}
-            for _, mat in pairs(byPos) do
-                needed[mat] = (needed[mat] or 0) + 1
-            end
-            -- Small buffer for construction losses (materials no longer drop on building site)
-            for mat, count in pairs(needed) do
-                needed[mat] = count + math.max(1, math.ceil(count * 0.05))
-            end
-            -- Drop materials OUTSIDE the building footprint to avoid contamination
-            -- Building: origin (cx-3, cz-3) to (cx+3, cz+2) for 7x6 template
-            local bx1 = cx - math.floor(tmpl.w / 2) - 1
-            local bz1 = cz - math.floor(tmpl.d / 2) - 1
-            local bx2 = bx1 + tmpl.w + 1
-            local bz2 = bz1 + tmpl.d + 1
-            local used = {}
-            local delay = 0
-            for mat, count in pairs(needed) do
-                for _ = 1, count do
-                    for attempt = 0, 400 do
-                        local gx = cx + math.random(-15, 15)
-                        local gz = cz + math.random(-15, 15)
-                        local k = gx .. "," .. gz
-                        -- Skip positions inside building footprint
-                        local insideBuilding = gx >= bx1 and gx <= bx2 and gz >= bz1 and gz <= bz2
-                        if not used[k] and not insideBuilding then
-                            used[k] = true
-                            fallingItems[#fallingItems + 1] = {
-                                gx = gx, gz = gz,
-                                y = Config.FALL_START_Y + delay,
-                                targetY = 0, itemType = mat,
-                            }
-                            delay = delay + 0.015
-                            break
-                        end
-                    end
-                end
-            end
-            log.write("main", "Dropped materials for Armorer House: %d items", #fallingItems)
-            break
-        end
-    end
+    -- No auto-drop: player selects template and clicks to drop materials
 
     lovr.graphics.setBackgroundColor(0.45, 0.65, 0.92)
     mouse.setRelativeMode(true)
 end
 
+-- Re-lock mouse when window regains focus (fixes alt-tab issue)
+function lovr.focus(focused)
+    if focused then
+        mouse.setRelativeMode(true)
+    end
+end
 
 function lovr.update(dt)
     local ok, err = pcall(function()
@@ -275,19 +270,68 @@ function lovr.draw(pass)
     -- Facing direction to rotation angle (radians around Y axis)
     local FACING_ANGLE = {north=0, south=math.pi, east=math.pi*0.5, west=math.pi*1.5}
 
-    -- Blocks
-    for _, b in ipairs(world.blocks) do
-        if b.state ~= "carried" then
-            pass:setColor(dl, dl, dl)
-            local t = tex[b.itemType] or tex.wood
-            pass:setMaterial(t)
-            local bx, by, bz = b.gx, b.gy, b.gz
-            local typ = b.itemType
-            local facing = b.facing
-            local half = b.half
-            local shape = b.shape
+    -- GPU INSTANCED RENDERING: rebuild buffers when blocks change
+    if world.renderDirty then
+        world.renderDirty = false
+        instanceDirty = false
+        local SPECIAL_TYPES = {
+            door=true, bed=true, torch=true, chest=true,
+            spruce_stairs=true, oak_stairs=true, dark_oak_stairs=true,
+            cobblestone_stairs=true, stone_stairs=true, stone_brick_stairs=true,
+            oak_slab=true, spruce_slab=true, dark_oak_slab=true,
+            smooth_stone_slab=true, cobblestone_slab=true, stone_slab=true,
+            trapdoor=true, spruce_trapdoor=true, oak_trapdoor=true,
+            fence=true, oak_fence=true, dark_oak_fence=true, oak_fence_gate=true,
+            barrel=true, composter=true, lectern=true, bell=true, campfire=true,
+            cauldron=true, anvil=true, grindstone=true,
+            glass_pane=true, ladder=true, cobblestone_wall=true, leaves=true,
+        }
+        local groups = {}
+        instanceSpecialBlocks = {}
+        for _, b in ipairs(world.blocks) do
+            if b.state ~= "carried" then
+                if SPECIAL_TYPES[b.itemType] then
+                    instanceSpecialBlocks[#instanceSpecialBlocks + 1] = b
+                else
+                    local typ = b.itemType
+                    if not groups[typ] then groups[typ] = {} end
+                    groups[typ][#groups[typ] + 1] = {b.gx, b.gy + 0.5, b.gz, 0.98}
+                end
+            end
+        end
+        instanceGroups = {}
+        for typ, positions in pairs(groups) do
+            instanceGroups[typ] = {
+                buffer = lovr.graphics.newBuffer('vec4', positions),
+                count = #positions,
+            }
+        end
+    end
 
-            if typ == "door" then
+    -- Draw full cubes: ONE draw call per block type (GPU instancing)
+    pass:setColor(dl, dl, dl)
+    pass:setShader(instanceShader)
+    for typ, group in pairs(instanceGroups) do
+        local t = tex[typ] or tex.wood
+        pass:setMaterial(t)
+        pass:send('InstanceData', group.buffer)
+        pass:draw(cubeMesh, mat4(), group.count)
+    end
+    pass:setShader()
+    pass:setMaterial()
+
+    -- Draw special shapes individually (minority of blocks)
+    for _, b in ipairs(instanceSpecialBlocks or {}) do
+        pass:setColor(dl, dl, dl)
+        local t = tex[b.itemType] or tex.wood
+        pass:setMaterial(t)
+        local bx, by, bz = b.gx, b.gy, b.gz
+        local typ = b.itemType
+        local facing = b.facing
+        local half = b.half
+        local shape = b.shape
+
+        if typ == "door" then
                 pass:box(bx, by + 1, bz, 0.95, 1.95, 0.15)
 
             elseif typ == "bed" then
@@ -441,26 +485,25 @@ function lovr.draw(pass)
                 pass:setColor(dl, dl, dl, 0.85)
                 pass:box(bx, by + 0.5, bz, 0.95, 0.95, 0.95)
 
-            -- DEFAULT: full cube
-            else
-                pass:box(bx, by + 0.5, bz, 0.98, 0.98, 0.98)
-            end
+            end  -- special block type switch
             pass:setMaterial()
 
-            -- Floating label for loose blocks (only nearest ones to camera)
-            if b.state == "loose" then
-                local toCamX = cam.x - b.gx
-                local toCamZ = cam.z - b.gz
-                local dist2 = toCamX * toCamX + toCamZ * toCamZ
-                if dist2 < 64 then  -- within 8 blocks only
-                    local angle = math.atan2(toCamX, toCamZ)
-                    pass:push()
-                    pass:translate(b.gx, b.gy + 1.1, b.gz)
-                    pass:rotate(angle, 0, 1, 0)
-                    pass:setColor(1, 1, 1, 0.7)
-                    pass:text(b.itemType, 0, 0, 0, 0.08)
-                    pass:pop()
-                end
+    end  -- special blocks loop
+
+    -- Floating labels for loose blocks (separate pass, all block types)
+    for _, b in ipairs(world.blocks) do
+        if b.state == "loose" then
+            local toCamX = cam.x - b.gx
+            local toCamZ = cam.z - b.gz
+            local dist2 = toCamX * toCamX + toCamZ * toCamZ
+            if dist2 < 64 then
+                local angle = math.atan2(toCamX, toCamZ)
+                pass:push()
+                pass:translate(b.gx, b.gy + 1.1, b.gz)
+                pass:rotate(angle, 0, 1, 0)
+                pass:setColor(1, 1, 1, 0.7)
+                pass:text(b.itemType, 0, 0, 0, 0.08)
+                pass:pop()
             end
         end
     end
@@ -742,20 +785,41 @@ function drawHUD(pass)
     pass:line(w / 2 - 15, h / 2, 0, w / 2 + 15, h / 2, 0)
     pass:line(w / 2, h / 2 - 15, 0, w / 2, h / 2 + 15, 0)
 
-    -- Bottom-center: item selector
+    -- Bottom-center: item/template selector
     local bx, by = w / 2, h - 40
-    pass:setColor(0, 0, 0, 0.55)
-    pass:plane(bx, by, 0, 260, 50)
-    pass:setColor(0.85, 0.85, 0.85)
-    pass:text("<", bx - 110, by, 0, px(24))
-    pass:setColor(c[1], c[2], c[3])
-    pass:plane(bx - 50, by, 0, 30, 30)
-    pass:setColor(1, 1, 1)
-    pass:text(selName, bx + 10, by - 4, 0, px(18))
-    pass:setColor(0.55, 0.55, 0.55)
-    pass:text(selectedIdx .. "/" .. #Items.panel_order, bx + 10, by + 12, 0, px(11))
-    pass:setColor(0.85, 0.85, 0.85)
-    pass:text(">", bx + 110, by, 0, px(24))
+    if uiMode == "block" then
+        pass:setColor(0, 0, 0, 0.55)
+        pass:plane(bx, by, 0, 260, 50)
+        pass:setColor(0.85, 0.85, 0.85)
+        pass:text("<", bx - 110, by, 0, px(24))
+        pass:setColor(c[1], c[2], c[3])
+        pass:plane(bx - 50, by, 0, 30, 30)
+        pass:setColor(1, 1, 1)
+        pass:text(selName, bx + 10, by - 4, 0, px(18))
+        pass:setColor(0.55, 0.55, 0.55)
+        pass:text(selectedIdx .. "/" .. #Items.panel_order, bx + 10, by + 12, 0, px(11))
+        pass:setColor(0.85, 0.85, 0.85)
+        pass:text(">", bx + 110, by, 0, px(24))
+    else
+        -- Template mode
+        local tmpl = TemplateLib.all[templateIdx]
+        local tmplName = tmpl and tmpl.name or "???"
+        pass:setColor(0.15, 0.1, 0.4, 0.7)
+        pass:plane(bx, by, 0, 360, 50)
+        pass:setColor(0.85, 0.85, 0.85)
+        pass:text("<", bx - 160, by, 0, px(24))
+        pass:setColor(1, 0.9, 0.3)
+        pass:text(tmplName, bx, by - 4, 0, px(16))
+        pass:setColor(0.65, 0.65, 0.65)
+        if uiMode == "template" then
+            pass:text(templateIdx .. "/" .. #TemplateLib.all .. "  [TAB] Template", bx, by + 12, 0, px(10))
+        else
+            pass:setColor(1, 0.4, 0.3)
+            pass:text(templateIdx .. "/" .. #TemplateLib.all .. "  [TAB] PREVIEW  X=Delete", bx, by + 12, 0, px(10))
+        end
+        pass:setColor(0.85, 0.85, 0.85)
+        pass:text(">", bx + 160, by, 0, px(24))
+    end
 
     -- Bottom-left: [N] + NPC button
     local btnX, btnY = 80, h - 40
@@ -772,7 +836,7 @@ function drawHUD(pass)
 
     -- Controls hint
     pass:setColor(0.7, 0.7, 0.7, 0.6)
-    pass:text("WASD=Fly  Tab=Follow  F=AntEye  Click=Drop  Q=Quit", 220, 38, 0, px(10))
+    pass:text("WASD=Fly  Tab=Mode  V=Follow  N=NPC  Click=Drop  Q=Quit", 230, 38, 0, px(10))
 
     -- Follow mode indicator
     if cam.followNPC then
@@ -833,6 +897,13 @@ function lovr.keypressed(key)
         return
     end
     if key == "tab" then
+        -- Cycle UI mode: block → template → preview → block
+        if uiMode == "block" then uiMode = "template"
+        elseif uiMode == "template" then uiMode = "preview"
+        else uiMode = "block" end
+    end
+    if key == "v" then
+        -- Follow NPC mode (moved from Tab)
         if #npcs == 0 then return end
         cam.followIdx = cam.followIdx + 1
         if cam.followIdx > #npcs then
@@ -848,14 +919,35 @@ function lovr.keypressed(key)
         cam.firstPerson = not cam.firstPerson
     end
     if key == "left" then
-        selectedIdx = selectedIdx - 1
-        if selectedIdx < 1 then selectedIdx = #Items.panel_order end
+        if uiMode == "block" then
+            selectedIdx = selectedIdx - 1
+            if selectedIdx < 1 then selectedIdx = #Items.panel_order end
+        else
+            templateIdx = templateIdx - 1
+            if templateIdx < 1 then templateIdx = #TemplateLib.all end
+        end
     end
     if key == "right" then
-        selectedIdx = selectedIdx + 1
-        if selectedIdx > #Items.panel_order then selectedIdx = 1 end
+        if uiMode == "block" then
+            selectedIdx = selectedIdx + 1
+            if selectedIdx > #Items.panel_order then selectedIdx = 1 end
+        else
+            templateIdx = templateIdx + 1
+            if templateIdx > #TemplateLib.all then templateIdx = 1 end
+        end
     end
     if key == "return" then dropItem() end
+    if key == "x" and uiMode == "preview" then
+        -- Delete last preview building
+        local last = previewBuildings[#previewBuildings]
+        if last then
+            for _, block in ipairs(last) do
+                world:removeBlock(block)
+            end
+            table.remove(previewBuildings)
+            log.write("main", "Removed preview building, %d remaining", #previewBuildings)
+        end
+    end
     if key == "n" then
         if #npcs >= 10 then return end  -- max 10 NPCs (prevent crash from too many)
         local gx, gz = cam:getLookTarget()
@@ -903,20 +995,221 @@ function lovr.mousepressed(mx, my, button)
 end
 
 function dropItem()
+    if uiMode == "template" then
+        dropTemplateMaterials()
+        return
+    elseif uiMode == "preview" then
+        placePreviewBuilding()
+        return
+    end
     local gx, gz = cam:getLookTarget()
     if not gx then return end
     log.write("world", "DROP %s at:%d,%d falling:%d", Items.panel_order[selectedIdx], gx, gz, #fallingItems)
     local itemType = Items.panel_order[selectedIdx]
-    -- Find highest occupied Y including blocks already in the world
     local topY = -1
     for y = 20, 0, -1 do
         if world:isOccupied(gx, y, gz) then topY = y; break end
     end
-    -- Also account for items still falling to this position
     for _, fi in ipairs(fallingItems) do
         if fi.gx == gx and fi.gz == gz then
             if fi.targetY > topY then topY = fi.targetY end
         end
     end
     fallingItems[#fallingItems + 1] = {gx = gx, gz = gz, y = Config.FALL_START_Y, targetY = topY + 1, itemType = itemType}
+end
+
+-- Drop all materials for a template as organized stacked columns
+function dropTemplateMaterials()
+    local tmpl = TemplateLib.all[templateIdx]
+    if not tmpl then return end
+
+    local gx, gz = cam:getLookTarget()
+    if not gx then return end
+
+    -- Count materials with deduplication (same logic as toBlueprint)
+    local doorX = tmpl.doorPos and tmpl.doorPos.x or math.floor(tmpl.w / 2)
+    local doorZ = tmpl.doorPos and tmpl.doorPos.z or 0
+    local byPos = {}
+    for i, b in ipairs(tmpl.blocks) do
+        b._origIdx = b._origIdx or i
+    end
+    local sorted = {}
+    for _, b in ipairs(tmpl.blocks) do sorted[#sorted+1] = b end
+    table.sort(sorted, function(a, b)
+        if a.y ~= b.y then return a.y < b.y end
+        if a.z ~= b.z then return a.z < b.z end
+        return (a._origIdx or 0) < (b._origIdx or 0)
+    end)
+    -- Block type mapping (same as templatelib.lua toBlueprint)
+    local TYPE_MAP = {
+        oak_door="door", white_bed="bed", yellow_bed="bed", red_bed="bed",
+        dirt="cobblestone", grass_block="cobblestone", farmland="cobblestone",
+        white_terracotta="cobblestone", terracotta="cobblestone", clay="cobblestone",
+        dirt_path="cobblestone", smooth_stone="cobblestone",
+        wall_torch="torch", stripped_oak_wood="stripped_oak_log",
+        white_wool="oak_planks", yellow_wool="oak_planks",
+        iron_bars="glass_pane",
+        yellow_stained_glass_pane="glass_pane", white_stained_glass_pane="glass_pane",
+        water_cauldron="cauldron", oak_leaves="leaves",
+        brewing_stand="crafting_table", smithing_table="crafting_table",
+        furnace="cobblestone",
+    }
+    local SKIP = {
+        white_carpet=true, yellow_carpet=true, green_carpet=true, red_carpet=true,
+        poppy=true, dandelion=true, potted_dandelion=true, rose_bush=true,
+        wheat=true, short_grass=true, tall_grass=true,
+        oak_pressure_plate=true, stone_pressure_plate=true,
+        water=true, lava=true, air=true,
+    }
+    for _, b in ipairs(sorted) do
+        if not (b.x == doorX and b.z == doorZ and b.y < 2) then
+            local mat = b.t or "wall"
+            if not SKIP[mat] then
+                mat = TYPE_MAP[mat] or mat
+                byPos[b.x..","..b.y..","..b.z] = mat
+            end
+        end
+    end
+    local needed = {}
+    local matOrder = {}
+    for _, mat in pairs(byPos) do
+        if not needed[mat] then matOrder[#matOrder+1] = mat end
+        needed[mat] = (needed[mat] or 0) + 1
+    end
+    -- Add 5% buffer
+    for mat, count in pairs(needed) do
+        needed[mat] = count + math.max(1, math.ceil(count * 0.05))
+    end
+    table.sort(matOrder)  -- alphabetical for consistent layout
+
+    -- Layout: flat grid on ground (y=0). Each block gets unique (x,z).
+    -- Same material type grouped together in rows for visual organization.
+    local delay = 0
+    local placeX = gx
+    local placeZ = gz
+    local rowStart = gx
+    local maxRowWidth = 20  -- blocks per row before wrapping to next row
+    local colInRow = 0
+    for _, mat in ipairs(matOrder) do
+        local count = needed[mat]
+        for _ = 1, count do
+            -- Find a free ground position
+            while world:isOccupied(placeX, 0, placeZ) do
+                colInRow = colInRow + 1
+                if colInRow >= maxRowWidth then
+                    colInRow = 0
+                    placeZ = placeZ + 1
+                    placeX = rowStart
+                else
+                    placeX = placeX + 1
+                end
+            end
+            fallingItems[#fallingItems + 1] = {
+                gx = placeX, gz = placeZ,
+                y = Config.FALL_START_Y + delay,
+                targetY = 0,
+                itemType = mat,
+            }
+            delay = delay + 0.005
+            colInRow = colInRow + 1
+            if colInRow >= maxRowWidth then
+                colInRow = 0
+                placeZ = placeZ + 1
+                placeX = rowStart
+            else
+                placeX = placeX + 1
+            end
+        end
+    end
+
+    -- Add to build queue
+    buildQueue[#buildQueue + 1] = {
+        template = tmpl,
+        blueprint = nil,  -- NPC will create blueprint with auto-siting
+        materialPos = {x = gx, z = gz},
+    }
+
+    log.write("main", "Template '%s' materials dropped (%d items), queue #%d",
+        tmpl.name, #fallingItems, #buildQueue)
+end
+
+-- Preview mode: instantly place a fully built building for template inspection
+function placePreviewBuilding()
+    local tmpl = TemplateLib.all[templateIdx]
+    if not tmpl then return end
+
+    local cx, cz = cam:getLookTarget()
+    if not cx then return end
+
+    local originX = math.floor(cx) - math.floor(tmpl.w / 2)
+    local originZ = math.floor(cz) - math.floor(tmpl.d / 2)
+    local doorX = tmpl.doorPos and tmpl.doorPos.x or math.floor(tmpl.w / 2)
+    local doorZ = tmpl.doorPos and tmpl.doorPos.z or 0
+
+    -- Sort + dedup (same as toBlueprint)
+    local sorted = {}
+    for i, b in ipairs(tmpl.blocks) do
+        b._origIdx = b._origIdx or i
+        sorted[#sorted + 1] = b
+    end
+    table.sort(sorted, function(a, b)
+        if a.y ~= b.y then return a.y < b.y end
+        if a.z ~= b.z then return a.z < b.z end
+        return (a._origIdx or 0) < (b._origIdx or 0)
+    end)
+    local byPos = {}
+    local posOrder = {}
+    for _, b in ipairs(sorted) do
+        local wx = originX + b.x
+        local wz = originZ + b.z
+        if not (b.x == doorX and b.z == doorZ and b.y < 2) then
+            local pk = wx..","..b.y..","..wz
+            if not byPos[pk] then posOrder[#posOrder + 1] = pk end
+            byPos[pk] = b
+        end
+    end
+
+    -- Place all blocks instantly
+    local placedBlocks = {}
+    for _, pk in ipairs(posOrder) do
+        local b = byPos[pk]
+        local wx = originX + b.x
+        local wz = originZ + b.z
+        local mat = b.t or "wall"
+        -- Apply same type normalization as toBlueprint
+        local PTYPE_MAP = {
+            oak_door="door", white_bed="bed", yellow_bed="bed", red_bed="bed",
+            dirt="cobblestone", grass_block="cobblestone", farmland="cobblestone",
+            white_terracotta="cobblestone", terracotta="cobblestone", clay="cobblestone",
+            dirt_path="cobblestone", smooth_stone="cobblestone",
+            wall_torch="torch", stripped_oak_wood="stripped_oak_log",
+            white_wool="oak_planks", yellow_wool="oak_planks",
+            iron_bars="glass_pane", furnace="cobblestone",
+            yellow_stained_glass_pane="glass_pane", white_stained_glass_pane="glass_pane",
+            water_cauldron="cauldron", oak_leaves="leaves",
+            brewing_stand="crafting_table", smithing_table="crafting_table",
+        }
+        local PSKIP = {
+            white_carpet=true, yellow_carpet=true, green_carpet=true,
+            poppy=true, dandelion=true, potted_dandelion=true,
+            wheat=true, short_grass=true, tall_grass=true,
+            oak_pressure_plate=true, water=true, lava=true, air=true,
+        }
+        if PSKIP[mat] then goto nextPreviewBlock end
+        mat = PTYPE_MAP[mat] or mat
+        local block = world:addBlock(wx, b.y, wz, mat, "placed")
+        if block then
+            block.noGravity = true
+            block.facing = b.f
+            block.half = b.h
+            block.shape = b.s
+            block.open = b.o
+            placedBlocks[#placedBlocks + 1] = block
+        end
+        ::nextPreviewBlock::
+    end
+
+    previewBuildings[#previewBuildings + 1] = placedBlocks
+    log.write("main", "Preview '%s' placed at (%d,%d): %d/%d blocks",
+        tmpl.name, originX, originZ, #placedBlocks, #posOrder)
 end
