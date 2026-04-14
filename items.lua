@@ -44,8 +44,41 @@ Items.registry = {
     cobblestone_stairs= { label = "c.stair", category = "building", building_type = "roof",  color = {0.50, 0.50, 0.48} },
     -- Trapdoors (non-cube: thin panel)
     spruce_trapdoor   = { label = "s.trap",  category = "building", building_type = "wall",  color = {0.38, 0.25, 0.14} },
+    oak_trapdoor      = { label = "o.trap",  category = "building", building_type = "wall",  color = {0.55, 0.40, 0.22} },
     -- Glass pane (thin)
     glass_pane        = { label = "g.pane",  category = "building", building_type = "wall",  color = {0.75, 0.88, 0.95}, transparent = true },
+    -- New Plains village block types
+    smooth_stone      = { label = "smooth",  category = "building", building_type = "wall",  color = {0.58, 0.58, 0.56} },
+    smooth_stone_slab = { label = "ss.slab", category = "building", building_type = "roof",  color = {0.58, 0.58, 0.56} },
+    stone_stairs      = { label = "st.stair",category = "building", building_type = "roof",  color = {0.55, 0.55, 0.53} },
+    stone_brick_stairs= { label = "sb.stair",category = "building", building_type = "roof",  color = {0.55, 0.55, 0.53} },
+    cobblestone_slab  = { label = "c.slab",  category = "building", building_type = "roof",  color = {0.50, 0.50, 0.48} },
+    dark_oak_log      = { label = "do.log",  category = "building", building_type = "wall",  color = {0.22, 0.14, 0.06} },
+    dark_oak_slab     = { label = "do.slab", category = "building", building_type = "roof",  color = {0.28, 0.18, 0.08} },
+    dark_oak_fence    = { label = "do.fnc",  category = "building", building_type = "wall",  color = {0.28, 0.18, 0.08} },
+    oak_fence         = { label = "o.fence", category = "building", building_type = "wall",  color = {0.55, 0.40, 0.22} },
+    oak_fence_gate    = { label = "o.gate",  category = "building", building_type = "wall",  color = {0.55, 0.40, 0.22} },
+    stripped_oak_log  = { label = "st.olog", category = "building", building_type = "wall",  color = {0.62, 0.48, 0.28} },
+    -- Job site blocks (cube-shaped, different textures)
+    barrel            = { label = "barrel",  category = "building", building_type = "wall",  color = {0.48, 0.35, 0.18} },
+    smoker            = { label = "smoker",  category = "building", building_type = "wall",  color = {0.40, 0.40, 0.38} },
+    blast_furnace     = { label = "b.furn",  category = "building", building_type = "wall",  color = {0.42, 0.42, 0.45} },
+    composter         = { label = "compost", category = "building", building_type = "wall",  color = {0.45, 0.35, 0.18} },
+    lectern           = { label = "lectern", category = "building", building_type = "wall",  color = {0.55, 0.40, 0.22} },
+    loom              = { label = "loom",    category = "building", building_type = "wall",  color = {0.50, 0.38, 0.22} },
+    stonecutter       = { label = "s.cut",   category = "building", building_type = "wall",  color = {0.52, 0.52, 0.50} },
+    cartography_table = { label = "c.table", category = "building", building_type = "wall",  color = {0.48, 0.35, 0.20} },
+    fletching_table   = { label = "f.table", category = "building", building_type = "wall",  color = {0.55, 0.42, 0.25} },
+    grindstone        = { label = "grind",   category = "building", building_type = "wall",  color = {0.55, 0.55, 0.52} },
+    anvil             = { label = "anvil",   category = "building", building_type = "wall",  color = {0.35, 0.35, 0.38} },
+    cauldron          = { label = "cauld",   category = "building", building_type = "wall",  color = {0.35, 0.35, 0.38} },
+    bell              = { label = "bell",    category = "building", building_type = "wall",  color = {0.75, 0.65, 0.20} },
+    campfire          = { label = "fire",    category = "building", building_type = "wall",  color = {0.60, 0.35, 0.12} },
+    hay_bale          = { label = "hay",     category = "building", building_type = "wall",  color = {0.72, 0.65, 0.25} },
+    dirt_path         = { label = "path",    category = "building", building_type = "wall",  color = {0.55, 0.45, 0.28} },
+    water             = { label = "water",   category = "building", building_type = "wall",  color = {0.20, 0.40, 0.80}, transparent = true },
+    -- Additional stair/slab variants
+    stone_slab        = { label = "st.slab", category = "building", building_type = "roof",  color = {0.55, 0.55, 0.53} },
 }
 
 -- Ordered list for UI carousel (all block types available to player)

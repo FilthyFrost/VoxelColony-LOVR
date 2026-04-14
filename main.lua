@@ -15,35 +15,8 @@ local world, npcs, fallingItems, tex, hudFont
 local selectedIdx = 1
 local gameTime = 0
 
--- Debug logging system (must be before lovr.load)
-local log = {time = 0}
-function log.init()
-    for _, m in ipairs({"main","npc","build","combat","social","world","perf"}) do
-        local f = io.open("/tmp/lovr_" .. m .. ".log", "w")
-        if f then f:write("=== " .. m .. " ===\n"); f:close() end
-    end
-end
-function log.setTime(t) log.time = t end
-function log.write(m, fmt, ...)
-    local f = io.open("/tmp/lovr_" .. m .. ".log", "a")
-    if f then
-        local msg = select("#", ...) > 0 and string.format(fmt, ...) or fmt
-        f:write(string.format("[%.1fs] %s\n", log.time, msg))
-        f:close()
-    end
-end
-function log.summary(npcs, bc, fi, mc)
-    local a = 0; if npcs then for _, n in ipairs(npcs) do if not n.dead then a = a+1 end end end
-    log.write("main", "TICK alive:%d npcs:%d blocks:%d falling:%d markers:%d", a, npcs and #npcs or 0, bc or 0, fi and #fi or 0, mc or 0)
-end
-local _pf = {n=0, dt=0, last=0}
-function log.perfFrame(dt)
-    _pf.n = _pf.n+1; _pf.dt = _pf.dt+dt
-    if log.time - _pf.last >= 5 then
-        if _pf.n > 0 then log.write("perf", "fps:%.1f avg:%.1fms", _pf.n/_pf.dt, _pf.dt/_pf.n*1000) end
-        _pf.n=0; _pf.dt=0; _pf.last=log.time
-    end
-end
+-- Debug logging: use shared module so NPC/world logs get correct timestamps
+local log = require("debuglog")
 
 ----------------------------------------------------------------------------
 -- CAMERA: Free-fly + Follow + Ant-Eye modes
@@ -179,6 +152,60 @@ function lovr.load()
     cam.pitch = -0.5
     npcs[#npcs + 1] = NPC.new(Config, world, Items, cx, cz, npcs)
 
+    -- Drop exactly the materials needed for one Armorer House
+    for _, tmpl in ipairs(TemplateLib.all) do
+        if tmpl.name:find("Armorer") then
+            -- Count needed materials WITH deduplication (same as toBlueprint)
+            local doorX = tmpl.doorPos and tmpl.doorPos.x or math.floor(tmpl.w / 2)
+            local doorZ = tmpl.doorPos and tmpl.doorPos.z or 0
+            local byPos = {}  -- dedup: same position → last block wins
+            for _, b in ipairs(tmpl.blocks) do
+                if not (b.x == doorX and b.z == doorZ and b.y < 2) then
+                    byPos[b.x..","..b.y..","..b.z] = b.t or "wall"
+                end
+            end
+            local needed = {}
+            for _, mat in pairs(byPos) do
+                needed[mat] = (needed[mat] or 0) + 1
+            end
+            -- Small buffer for construction losses (materials no longer drop on building site)
+            for mat, count in pairs(needed) do
+                needed[mat] = count + math.max(1, math.ceil(count * 0.05))
+            end
+            -- Drop materials OUTSIDE the building footprint to avoid contamination
+            -- Building: origin (cx-3, cz-3) to (cx+3, cz+2) for 7x6 template
+            local bx1 = cx - math.floor(tmpl.w / 2) - 1
+            local bz1 = cz - math.floor(tmpl.d / 2) - 1
+            local bx2 = bx1 + tmpl.w + 1
+            local bz2 = bz1 + tmpl.d + 1
+            local used = {}
+            local delay = 0
+            for mat, count in pairs(needed) do
+                for _ = 1, count do
+                    for attempt = 0, 400 do
+                        local gx = cx + math.random(-15, 15)
+                        local gz = cz + math.random(-15, 15)
+                        local k = gx .. "," .. gz
+                        -- Skip positions inside building footprint
+                        local insideBuilding = gx >= bx1 and gx <= bx2 and gz >= bz1 and gz <= bz2
+                        if not used[k] and not insideBuilding then
+                            used[k] = true
+                            fallingItems[#fallingItems + 1] = {
+                                gx = gx, gz = gz,
+                                y = Config.FALL_START_Y + delay,
+                                targetY = 0, itemType = mat,
+                            }
+                            delay = delay + 0.015
+                            break
+                        end
+                    end
+                end
+            end
+            log.write("main", "Dropped materials for Armorer House: %d items", #fallingItems)
+            break
+        end
+    end
+
     lovr.graphics.setBackgroundColor(0.45, 0.65, 0.92)
     mouse.setRelativeMode(true)
 end
@@ -274,7 +301,7 @@ function lovr.draw(pass)
 
             -- STAIRS: L-shaped block (bottom slab + back wall), rotated by facing
             elseif typ == "spruce_stairs" or typ == "oak_stairs" or typ == "dark_oak_stairs"
-                   or typ == "cobblestone_stairs" then
+                   or typ == "cobblestone_stairs" or typ == "stone_stairs" or typ == "stone_brick_stairs" then
                 local angle = FACING_ANGLE[facing or "north"] or 0
                 local topHalf = (half == "top")
                 pass:push()
@@ -292,7 +319,9 @@ function lovr.draw(pass)
                 pass:pop()
 
             -- SLABS: half-height block
-            elseif typ == "oak_slab" or typ == "spruce_slab" or typ == "dark_oak_slab" then
+            elseif typ == "oak_slab" or typ == "spruce_slab" or typ == "dark_oak_slab"
+                   or typ == "smooth_stone_slab" or typ == "cobblestone_slab"
+                   or typ == "stone_slab" then
                 if half == "top" then
                     pass:box(bx, by + 0.75, bz, 0.98, 0.48, 0.98)
                 elseif half == "double" then
@@ -302,7 +331,7 @@ function lovr.draw(pass)
                 end
 
             -- TRAPDOORS: thin flat panel
-            elseif typ == "trapdoor" or typ == "spruce_trapdoor" then
+            elseif typ == "trapdoor" or typ == "spruce_trapdoor" or typ == "oak_trapdoor" then
                 local angle = FACING_ANGLE[facing or "north"] or 0
                 if b.open then
                     -- Open: vertical panel on wall side
@@ -320,11 +349,75 @@ function lovr.draw(pass)
                     end
                 end
 
-            -- FENCES: thin post + crossbar
-            elseif typ == "fence" then
+            -- FENCES: thin post + crossbars
+            elseif typ == "fence" or typ == "oak_fence" or typ == "dark_oak_fence" then
                 pass:box(bx, by + 0.5, bz, 0.2, 0.98, 0.2)     -- center post
                 pass:box(bx, by + 0.65, bz, 0.7, 0.08, 0.08)   -- top rail X
                 pass:box(bx, by + 0.35, bz, 0.08, 0.08, 0.7)   -- bottom rail Z
+
+            -- FENCE GATE: wider thin gate
+            elseif typ == "oak_fence_gate" then
+                local angle = FACING_ANGLE[facing or "north"] or 0
+                pass:push()
+                pass:translate(bx, by + 0.5, bz)
+                pass:rotate(angle, 0, 1, 0)
+                pass:box(0, 0.1, -0.4, 0.15, 0.78, 0.15)  -- left post
+                pass:box(0, 0.1, 0.4, 0.15, 0.78, 0.15)   -- right post
+                pass:box(0, 0.2, 0, 0.08, 0.08, 0.65)      -- bottom rail
+                pass:box(0, 0.45, 0, 0.08, 0.08, 0.65)     -- top rail
+                pass:pop()
+
+            -- BARREL: slightly rounded chest
+            elseif typ == "barrel" then
+                pass:box(bx, by + 0.5, bz, 0.8, 0.95, 0.8)
+
+            -- COMPOSTER: open-top box
+            elseif typ == "composter" then
+                pass:box(bx, by + 0.25, bz, 0.85, 0.48, 0.85)  -- bottom
+                pass:box(bx, by + 0.5, bz - 0.38, 0.85, 0.98, 0.08)  -- wall
+                pass:box(bx, by + 0.5, bz + 0.38, 0.85, 0.98, 0.08)
+                pass:box(bx - 0.38, by + 0.5, bz, 0.08, 0.98, 0.85)
+                pass:box(bx + 0.38, by + 0.5, bz, 0.08, 0.98, 0.85)
+
+            -- LECTERN: angled bookstand
+            elseif typ == "lectern" then
+                local angle = FACING_ANGLE[facing or "north"] or 0
+                pass:push()
+                pass:translate(bx, by + 0.5, bz)
+                pass:rotate(angle, 0, 1, 0)
+                pass:box(0, -0.25, 0, 0.6, 0.48, 0.6)   -- base
+                pass:box(0, 0.05, 0, 0.3, 0.12, 0.3)     -- post
+                pass:box(0, 0.25, 0, 0.7, 0.12, 0.5)     -- top
+                pass:pop()
+
+            -- BELL: golden bell on frame
+            elseif typ == "bell" then
+                pass:box(bx, by + 0.7, bz, 0.9, 0.12, 0.2)   -- top bar
+                pass:box(bx, by + 0.4, bz, 0.4, 0.5, 0.4)    -- bell body
+
+            -- CAMPFIRE: flat fire on logs
+            elseif typ == "campfire" then
+                pass:box(bx, by + 0.15, bz, 0.9, 0.25, 0.2)  -- log 1
+                pass:box(bx, by + 0.15, bz, 0.2, 0.25, 0.9)  -- log 2 (cross)
+
+            -- CAULDRON: open-top bucket
+            elseif typ == "cauldron" then
+                pass:box(bx, by + 0.35, bz, 0.75, 0.68, 0.75)
+
+            -- ANVIL: heavy metal block
+            elseif typ == "anvil" then
+                local angle = FACING_ANGLE[facing or "north"] or 0
+                pass:push()
+                pass:translate(bx, by + 0.5, bz)
+                pass:rotate(angle, 0, 1, 0)
+                pass:box(0, -0.3, 0, 0.7, 0.18, 0.5)   -- base
+                pass:box(0, -0.05, 0, 0.3, 0.3, 0.3)    -- middle
+                pass:box(0, 0.2, 0, 0.8, 0.2, 0.45)     -- top
+                pass:pop()
+
+            -- GRINDSTONE: hanging wheel
+            elseif typ == "grindstone" then
+                pass:box(bx, by + 0.5, bz, 0.6, 0.6, 0.6)
 
             -- GLASS PANES: thin vertical panel
             elseif typ == "glass_pane" then

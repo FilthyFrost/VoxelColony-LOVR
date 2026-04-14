@@ -9,8 +9,33 @@ TL.all = {}
 
 function TL.init()
     local names = {
+        -- Original templates
         "armorer_house",
         "small_15x13_survival_house", "cozy_cabin", "start_house", "small_cozy_house",
+        -- Plains Village buildings (from Minecraft Wiki)
+        "big_house_1",
+        "butcher_shop_1", "butcher_shop_2",
+        "cartographer_1",
+        "fisher_cottage_1",
+        "fletcher_house_1",
+        "fountain_1",
+        "lamp_1",
+        "large_farm_1",
+        "library_1", "library_2",
+        "masons_house_1",
+        "medium_house_1", "medium_house_2",
+        "meeting_point_1", "meeting_point_2", "meeting_point_3",
+        "meeting_point_4", "meeting_point_5",
+        "shepherds_house",
+        "small_farm_1",
+        "small_house_1", "small_house_2", "small_house_3",
+        "small_house_4", "small_house_5", "small_house_6",
+        "small_house_7", "small_house_8",
+        "stable_1",
+        "tannery_1",
+        "temple_1", "temple_2",
+        "tool_smith_house_1",
+        "weaponsmith_1",
     }
     TL.all = {}
     for _, name in ipairs(names) do
@@ -76,16 +101,23 @@ function TL.toBlueprint(tmpl, homeX, homeZ, npc)
     local doorX = originX + (tmpl.doorPos and tmpl.doorPos.x or math.floor(tmpl.w / 2))
     local doorZ = originZ + (tmpl.doorPos and tmpl.doorPos.z or 0)
 
-    -- Sort blocks by Y (build from ground up), then by distance from door (build outward)
+    -- Sort blocks by Y (build from ground up), then Z, then original index
+    -- CRITICAL: Lua's table.sort is unstable. Without the original index tiebreaker,
+    -- entries at the same (y,z) get scrambled, breaking the "last entry wins" dedup.
     local sorted = {}
-    for _, b in ipairs(tmpl.blocks) do sorted[#sorted + 1] = b end
+    for i, b in ipairs(tmpl.blocks) do
+        b._origIdx = i
+        sorted[#sorted + 1] = b
+    end
     table.sort(sorted, function(a, b)
         if a.y ~= b.y then return a.y < b.y end
-        return a.z < b.z  -- front to back within same layer
+        if a.z ~= b.z then return a.z < b.z end
+        return a._origIdx < b._origIdx  -- preserve original order for same (y,z)
     end)
 
-    -- Generate steps
-    local steps = {}
+    -- Generate steps (deduplicate: same position → last entry wins)
+    local stepsByPos = {}  -- "x,y,z" → step data
+    local stepOrder = {}   -- ordered list of position keys
     for _, b in ipairs(sorted) do
         local wx = originX + b.x
         local wz = originZ + b.z
@@ -103,12 +135,17 @@ function TL.toBlueprint(tmpl, homeX, homeZ, npc)
         else
             blockType = slotMap[b.slot] or slotMap.primary or "wall"
         end
-        steps[#steps + 1] = {
+
+        local posKey = wx .. "," .. wy .. "," .. wz
+        if not stepsByPos[posKey] then
+            stepOrder[#stepOrder + 1] = posKey
+        end
+        -- Last entry at this position wins (overrides earlier)
+        stepsByPos[posKey] = {
             action = "place",
             x = wx, y = wy, z = wz,
             need = blockType,
-            exactType = isExact,  -- true = match exact item type, not building_type
-            -- Preserve Minecraft block metadata for rendering
+            exactType = isExact,
             facing = b.f,
             half = b.h,
             shape = b.s,
@@ -117,6 +154,21 @@ function TL.toBlueprint(tmpl, homeX, homeZ, npc)
 
         ::nextBlock::
     end
+
+    local steps = {}
+    for _, posKey in ipairs(stepOrder) do
+        steps[#steps + 1] = stepsByPos[posKey]
+    end
+
+    -- Assign dependency layers: layer N requires all steps in layer N-1 complete
+    -- Each Y level = one layer. Simple and correct.
+    for _, s in ipairs(steps) do
+        s.layer = s.y
+    end
+
+    -- No scaffold needed — NPCs use ground-based placement (like RimWorld).
+    -- NPC walks near the building and places blocks remotely at any height.
+    local scaffoldCount = 0
 
     return {
         originX = originX,
@@ -134,6 +186,8 @@ function TL.toBlueprint(tmpl, homeX, homeZ, npc)
         completed = false,
         furnished = false,
         templateName = tmpl.name,
+        scaffoldCount = scaffoldCount,  -- for material drop calculation
+        scaffoldPositions = scaffoldPositions,  -- for diagnostic
     }
 end
 

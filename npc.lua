@@ -136,6 +136,9 @@ function NPC.new(config, world, items, startX, startZ, allNpcs)
     self.shelterVerified = false
     self.buildingsOwned = {}
     self.helpingBlueprint = nil  -- cooperative: reference to another NPC's blueprint
+    self.buildStep = nil         -- persistent step index (survives re-think)
+    self.buildStepBp = nil       -- which blueprint the step belongs to
+    self.buildStalled = false    -- true when no executable build step (missing materials)
 
     -- Task
     self.task = nil
@@ -260,8 +263,19 @@ function NPC:update(dt)
 
     self.resourceCacheTimer = self.resourceCacheTimer - dt
     if self.resourceCacheTimer <= 0 then
+        local oldCache = self.resourceCache
         self.resourceCache = self.world:countLooseByType()
         self.resourceCacheTimer = 3
+        -- Reset buildStalled if new materials appeared (player dropped blocks)
+        if self.buildStalled then
+            for k, v in pairs(self.resourceCache) do
+                if v > 0 and (not oldCache[k] or oldCache[k] == 0) then
+                    self.buildStalled = false
+                    self.thinkTimer = 0  -- re-think immediately
+                    break
+                end
+            end
+        end
     end
 
     self.giftCooldown = self.giftCooldown - dt
@@ -293,17 +307,86 @@ function NPC:update(dt)
     if self.thoughtTimer > 0 then self.thoughtTimer = self.thoughtTimer - dt end
     self:_updateMood()
 
+    -- === PHASE 1: Eject from solid (MTV algorithm) ===
+    -- If NPC's grid position is inside a solid block, teleport to nearest free cell
+    if self.world:isSolid(self.gx, self.gy, self.gz) then
+        local found = false
+        for r = 1, 5 do
+            for dx = -r, r do
+                for dz = -r, r do
+                    if math.abs(dx) == r or math.abs(dz) == r then
+                        local nx, nz = self.gx + dx, self.gz + dz
+                        if self.world:canStandAt(nx, self.gy, nz) then
+                            self.gx, self.gz = nx, nz
+                            self.x, self.z = nx, nz  -- snap visual too
+                            self.path = nil
+                            found = true
+                            break
+                        end
+                    end
+                end
+                if found then break end
+            end
+            if found then break end
+        end
+    end
+
+    -- === PHASE 2: NPC-NPC separation force (Reynolds 1/r) ===
+    -- Prevents multiple NPCs from stacking on the same position
+    local sepX, sepZ = 0, 0
+    local sepRadius = 1.2
+    for _, other in ipairs(self.allNpcs) do
+        if other ~= self and not other.dead then
+            local dx = self.x - other.x
+            local dz = self.z - other.z
+            local dist = math.sqrt(dx * dx + dz * dz)
+            if dist < sepRadius and dist > 0.01 then
+                local strength = (sepRadius - dist) / sepRadius  -- 0..1, stronger when closer
+                sepX = sepX + (dx / dist) * strength * 2.0
+                sepZ = sepZ + (dz / dist) * strength * 2.0
+            end
+        end
+    end
+
+    -- === PHASE 3: Interpolation + separation ===
     local spd = 8 * dt
-    self.x = self.x + (self.gx - self.x) * spd
+    self.x = self.x + (self.gx - self.x) * spd + sepX * dt
     self.y = self.y + (self.gy - self.y) * spd
-    self.z = self.z + (self.gz - self.z) * spd
+    self.z = self.z + (self.gz - self.z) * spd + sepZ * dt
+
+    -- === PHASE 4: Block collision (axis-ordered: Y, X, Z) ===
+    -- NPC body is 0.6 wide cylinder, check edges against solid blocks
+    local halfW = 0.3
+    for dy = 0, 1 do
+        local cy = self.gy + dy
+        -- X axis first
+        local cellZ = math.floor(self.z + 0.5)
+        local rightCell = math.floor(self.x + halfW + 0.5)
+        if rightCell ~= self.gx and self.world:isSolid(rightCell, cy, cellZ) then
+            self.x = math.min(self.x, rightCell - 0.5 - halfW)
+        end
+        local leftCell = math.floor(self.x - halfW + 0.5)
+        if leftCell ~= self.gx and self.world:isSolid(leftCell, cy, cellZ) then
+            self.x = math.max(self.x, leftCell + 0.5 + halfW)
+        end
+        -- Z axis (after X resolved)
+        local cellX = math.floor(self.x + 0.5)
+        local frontCell = math.floor(self.z + halfW + 0.5)
+        if frontCell ~= self.gz and self.world:isSolid(cellX, cy, frontCell) then
+            self.z = math.min(self.z, frontCell - 0.5 - halfW)
+        end
+        local backCell = math.floor(self.z - halfW + 0.5)
+        if backCell ~= self.gz and self.world:isSolid(cellX, cy, backCell) then
+            self.z = math.max(self.z, backCell + 0.5 + halfW)
+        end
+    end
 
     if self.pathRecalcTimer > 0 then self.pathRecalcTimer = self.pathRecalcTimer - dt end
 
     self.thinkTimer = self.thinkTimer - dt
-    if self.thinkTimer <= 0 or self.task == nil then
+    if self.thinkTimer <= 0 then
         self:_think()
-        self.thinkTimer = 2
+        self.thinkTimer = self.task and 2 or 3  -- longer cooldown when idle
     end
 
     if self.task then
@@ -368,6 +451,10 @@ function NPC:_scoreContinueBuild()
     if self.injured then return 0 end
     local bp = self.helpingBlueprint or self.blueprint
     if bp and not bp.completed then
+        -- If build is stalled (no materials), drop to very low priority
+        -- so NPC does other things (idle, socialize, wander) instead of
+        -- burning CPU scanning 169 steps every 5 seconds
+        if self.buildStalled then return 8 end
         local base = self.helpingBlueprint and 88 or 90
         if self.traits.diligent then base = base * 1.3 end
         if self.traits.lazy then base = base * 0.6 end
@@ -378,13 +465,19 @@ end
 
 function NPC:_scoreHelpBuild()
     if self.helpingBlueprint and not self.helpingBlueprint.completed then return 0 end
-    -- Look for ANY NPC with unfinished blueprint (collective consciousness, no range limit)
+    -- Look for ANY NPC with unfinished blueprint (collective consciousness)
     for _, other in ipairs(self.allNpcs) do
         if other ~= self and other.blueprint and not other.blueprint.completed then
-            -- Help others even if we have our own completed blueprint
-            -- Only skip if we have our own UNFINISHED blueprint
             if self.blueprint and not self.blueprint.completed then return 0 end
-            local base = 95  -- very high: help others before building own
+            -- DF-inspired: reduce score per additional helper already on this blueprint
+            local helperCount = 0
+            for _, h in ipairs(self.allNpcs) do
+                if h ~= self and not h.dead and h.helpingBlueprint == other.blueprint then
+                    helperCount = helperCount + 1
+                end
+            end
+            local base = 95 - helperCount * 12  -- each helper reduces appeal
+            if base < 30 then base = 30 end
             if self.traits.social then base = base * 1.2 end
             if self.traits.shy then base = base * 0.7 end
             return base
@@ -437,27 +530,16 @@ function NPC:_scoreStockpile()
 end
 
 function NPC:_scoreFurnishHome()
-    if not self:_hasShelter() then return 0 end
-    if not self.blueprint or self.blueprint.width < 5 or self.blueprint.depth < 5 then return 0 end
-    local available = 0
-    for _, ft in ipairs({"door", "bed", "torch", "chest"}) do
-        if (self.resourceCache[ft] or 0) > 0 then available = available + 1 end
-    end
-    if available == 0 then return 0 end
-    local comfortR = self.comfort / self.cfg.COMFORT_MAX
-    return (35 + available * 3) * (1 - comfortR * 0.5) + self.gratitude * 0.15
+    -- Disabled for template builds: template defines the complete building
+    if self.blueprint and self.blueprint.templateName then return 0 end
+    return 0
 end
 
 function NPC:_scoreBuildBigger()
-    if not self:_hasShelter() then return 0 end
-    local options = Blueprint.chooseBlueprintSize(self.resourceCache, self.cfg, self.blueprint)
-    if self.blueprint then
-        local oldVol = self.blueprint.width * self.blueprint.depth * (self.blueprint.stories or 1)
-        local newVol = options.w * options.d * options.stories
-        if newVol <= oldVol then return 0 end
-    end
-    -- High priority: always beats stockpile(35) and go_home(60)
-    return 80 + self.gratitude * 0.2
+    -- Disabled for template-based building: Armorer House is the final design.
+    -- build_bigger generates a dynamic room that conflicts with the template.
+    if self.blueprint and self.blueprint.templateName then return 0 end
+    return 0
 end
 
 function NPC:_scoreSleep()
@@ -594,7 +676,10 @@ function NPC:_executeDecision(name)
     if name == "attack" then
         self:_execAttack()
     elseif name == "continue_build" then
-        self:_pushBuildTask()
+        -- Don't interrupt active build tasks (fetch/place in progress)
+        if not self.task or (self.task.type ~= "fetch_block" and self.task.type ~= "place_block" and self.task.type ~= "break_block") then
+            self:_pushBuildTask()
+        end
     elseif name == "help_build" then
         self:_execHelpBuild()
     elseif name == "build_shelter" then
@@ -668,6 +753,13 @@ end
 
 function NPC:_execBuildShelter()
     if not self.blueprint then
+        -- GUARD: don't start a new build if ANY NPC has an unfinished one
+        for _, other in ipairs(self.allNpcs) do
+            if other ~= self and other.blueprint and not other.blueprint.completed then
+                return  -- help them instead
+            end
+        end
+
         -- Count ALL building materials available
         local totalMats = 0
         for itemType, count in pairs(self.resourceCache) do
@@ -733,53 +825,232 @@ function NPC:_execBuildBigger()
 end
 
 ----------------------------------------------------------------------------
--- PUSH BUILD TASK (simple: uses shared currentStep pointer)
+-- COOPERATIVE BUILD SYSTEM
+-- Design: persistent step assignment + material check + block reservation
+-- Each NPC "owns" a step (buildStep) until it completes or explicitly gives up.
+-- Steps are skipped if: already done, claimed by another NPC, unreachable,
+-- or no materials available. This prevents 10 NPCs from all getting stuck
+-- on the same missing-material step.
 ----------------------------------------------------------------------------
+
+function NPC:_isStepDone(s)
+    if s.action == "place" or s.action == "place_furniture" then
+        local k = self.world:_key(s.x, s.y, s.z)
+        local block = self.world.occupied[k]
+        if block and block.state == "placed" then
+            if s.exactType or s.action == "place_furniture" then
+                return block.itemType == s.need
+            else
+                local def = self.items.get(block.itemType)
+                return def and def.building_type == s.need
+            end
+        end
+        return false
+    elseif s.action == "break" then
+        return not self.world:isOccupied(s.x, s.y, s.z)
+    end
+    return false
+end
+
+-- Can the NPC physically reach this step? (cheap check, no A*)
+-- Checks if at least one adjacent position is standable AND reachable from ground
+function NPC:_isStepReachable(s)
+    -- For ground-level placement (y=0), always reachable if within grid
+    if s.y == 0 then return true end
+    -- For all other heights: check if any adjacent position has a floor to stand on
+    for _, d in ipairs({{1,0},{-1,0},{0,1},{0,-1},{0,0}}) do
+        local ax, az = s.x + d[1], s.z + d[2]
+        for standY = s.y, math.max(0, s.y - 2), -1 do
+            if self.world:canStandAt(ax, standY, az) and s.y <= standY + 2 then
+                -- Also verify NPC can get to this height from ground
+                -- Check there's a chain of blocks from ground up to standY
+                if standY == 0 then return true end  -- ground level, always accessible
+                -- For standY > 0, the floor must exist (canStandAt already checked)
+                -- and the NPC can jump up (A* handles the pathing)
+                return true
+            end
+        end
+    end
+    return false
+end
+
+-- Does the required material exist as a loose block in the world?
+function NPC:_hasMaterialFor(s)
+    if s.action == "break" then return true end
+    if s.exactType or s.action == "place_furniture" then
+        -- Need exact item type
+        for _, b in ipairs(self.world.blocks) do
+            if b.state == "loose" and b.itemType == s.need then return true end
+        end
+    else
+        -- Need any block with matching building_type
+        for _, b in ipairs(self.world.blocks) do
+            if b.state == "loose" then
+                local def = self.items.get(b.itemType)
+                if def and def.building_type == s.need then return true end
+            end
+        end
+    end
+    return false
+end
+
+-- Find nearest loose block not already targeted by another NPC's fetch task
+function NPC:_findUnreservedBlock(step)
+    -- Gather blocks reserved by other NPCs
+    local reserved = {}
+    for _, other in ipairs(self.allNpcs) do
+        if other ~= self and not other.dead
+           and other.task and other.task.type == "fetch_block" and other.task.target then
+            reserved[other.task.target] = true
+        end
+    end
+    -- Search for nearest unreserved loose block
+    local best, bestD2 = nil, math.huge
+    for _, b in ipairs(self.world.blocks) do
+        if b.state == "loose" and not reserved[b] then
+            local match = false
+            if step.exactType or step.action == "place_furniture" then
+                match = (b.itemType == step.need)
+            else
+                local def = self.items.get(b.itemType)
+                match = def and def.building_type == step.need
+            end
+            if match then
+                local d2 = (b.gx - self.gx)^2 + (b.gz - self.gz)^2
+                if d2 < bestD2 then best, bestD2 = b, d2 end
+            end
+        end
+    end
+    return best
+end
+
+-- Get steps claimed by other NPCs (via persistent buildStep, not ephemeral task)
+function NPC:_getClaimedSteps(bp)
+    local claimed = {}
+    for _, other in ipairs(self.allNpcs) do
+        if other ~= self and not other.dead
+           and other.buildStep and other.buildStepBp == bp then
+            claimed[other.buildStep] = true
+        end
+    end
+    return claimed
+end
+
 function NPC:_pushBuildTask()
     local bp = self.helpingBlueprint or self.blueprint
     if not bp then return end
 
-    -- Skip already-done steps
-    while Blueprint.skipIfDone(bp, self.world) do end
-    local step = Blueprint.currentStep(bp)
+    -- NOTE: removed skipIfDone loop here — it can prematurely set bp.completed
+    -- when NPCs build out-of-order (distance-weighted selection). The full scan
+    -- below correctly handles completion detection.
+
+    -- If NPC has a persistent step assignment, check if it's still valid
+    if self.buildStep and self.buildStepBp == bp then
+        local s = bp.steps[self.buildStep]
+        if s and not self:_isStepDone(s) then
+            -- Step still valid — execute it
+            self:_assignStepTask(bp, s)
+            return
+        end
+        -- Step completed or invalid — clear and find new
+        self.buildStep = nil
+        self.buildStepBp = nil
+    end
+
+    -- SOFT LAYER PRIORITY: prefer lower layers but don't block on missing materials.
+    -- If a step's material is unavailable, skip it and try higher layers.
+    -- This prevents the entire build from stalling when one material runs out.
+    local claimed = self:_getClaimedSteps(bp)
+    local step = nil
+    local stepIdx = nil
+    local noMaterialStep = nil
+    local bestScore = -1
+    for i = 1, #bp.steps do
+        local s = bp.steps[i]
+        local skip = false
+        if self:_isStepDone(s) then skip = true end
+        if not skip and claimed[i] then skip = true end
+        if not skip and (s.action == "place" or s.action == "place_furniture") then
+            if not self:_hasMaterialFor(s) then
+                if not noMaterialStep then noMaterialStep = s end
+                skip = true
+            end
+        end
+        if not skip then
+            -- ACO-inspired: prefer steps closer to NPC (1 / (1 + distance))
+            -- Soft layer priority: lower Y gets massive bonus (build bottom-up)
+            -- + distance bonus (prefer nearby steps)
+            local dist = math.abs(self.gx - s.x) + math.abs(self.gz - s.z)
+            local layerPenalty = (s.layer or s.y) * 100  -- strongly prefer lower layers
+            local score = 1000 - layerPenalty - dist
+            if score > bestScore then
+                bestScore = score
+                step = s
+                stepIdx = i
+            end
+        end
+    end
 
     if not step then
-        bp.completed = true
-        if self.helpingBlueprint then
-            self.helpingBlueprint = nil
+        -- No executable step found. Check if blueprint is fully complete.
+        local allDone = true
+        for i = 1, #bp.steps do
+            if not self:_isStepDone(bp.steps[i]) then allDone = false; break end
         end
-        if bp == self.blueprint then
-            -- Check if this was a demolish phase — transition to building
-            if bp.isDemolish and self.pendingBuildOptions then
-                self.resourceCache = self.world:countLooseByType()
-                local options = self.pendingBuildOptions
-                self.pendingBuildOptions = nil
-                self.blueprint = Blueprint.generateDynamicRoom(self.homeX, self.homeZ, self.cfg, options)
-                self.shelterVerified = false
-                self.ambition = self.ambition * 0.3
-                self.buildingsOwned[#self.buildingsOwned + 1] = {
-                    width = bp.width, depth = bp.depth,
-                }
-                self:_pushBuildTask()
-                return
-            end
-            if bp.completed then
+        if allDone then bp.completed = true end
+
+        if bp.completed then
+            self.buildStep = nil
+            self.buildStepBp = nil
+            if self.helpingBlueprint then self.helpingBlueprint = nil end
+            if bp == self.blueprint then
+                if bp.isDemolish and self.pendingBuildOptions then
+                    self.resourceCache = self.world:countLooseByType()
+                    local options = self.pendingBuildOptions
+                    self.pendingBuildOptions = nil
+                    self.blueprint = Blueprint.generateDynamicRoom(self.homeX, self.homeZ, self.cfg, options)
+                    self.shelterVerified = false
+                    self.ambition = self.ambition * 0.3
+                    self.buildingsOwned[#self.buildingsOwned + 1] = {
+                        width = bp.width, depth = bp.depth,
+                    }
+                    self:_pushBuildTask()
+                    return
+                end
                 self.shelterVerified = self.world:hasRoof(
                     math.floor(self.homeX + 0.5), math.floor(self.homeZ + 0.5))
                 self.comfort = math.min(self.cfg.COMFORT_MAX,
                     self.comfort + bp.width * bp.depth * 0.5)
-                if not bp.furnished and bp.width >= 5 and bp.depth >= 5 then
+                if not bp.furnished and not bp.templateName and bp.width >= 5 and bp.depth >= 5 then
                     Blueprint.addFurnishingSteps(bp, self.world, self.items)
                 end
-                -- Publish home_here marker
                 self.world:addMarker("home_here", self.homeX, self.homeZ, self.npcId)
+            end
+        else
+            -- Not complete but no executable step — stalled (missing materials)
+            self.buildStalled = true
+            if noMaterialStep then
+                log.write("build", "%s stalled: need %s", self.name, noMaterialStep.need)
+                self:_setThought("need_wall"); self.thoughtTimer = 5
+                self.world:addMarker("help_needed", self.gx, self.gz, self.npcId)
             end
         end
         self.task = nil
+        self.thinkTimer = 20  -- long cooldown when stalled (don't waste CPU scanning)
         return
     end
 
+    -- Claim the step persistently — building is active again
+    self.buildStep = stepIdx
+    self.buildStepBp = bp
+    self.buildStalled = false
+    self:_assignStepTask(bp, step)
+end
+
+-- Assign the actual fetch/place/break task for a step
+function NPC:_assignStepTask(bp, step)
     if step.action == "place" or step.action == "place_furniture" then
+        -- Check if carried block matches
         if self.carriedBlock then
             local def = self.items.get(self.carriedBlock.itemType)
             local matches = false
@@ -794,22 +1065,15 @@ function NPC:_pushBuildTask()
         if self.carriedBlock then
             self.task = {type = "place_block", target = {x = step.x, z = step.z, y = step.y}, timer = 0, step = step}
         else
-            local block
-            if step.action == "place_furniture" or step.exactType then
-                block = self.world:nearestLoose(self.gx, self.gz, step.need)
-            else
-                block = self.world:nearestLooseBuilding(self.gx, self.gz, step.need)
-            end
+            local block = self:_findUnreservedBlock(step)
             if block then
                 self.task = {type = "fetch_block", target = block, timer = 0, step = step}
             else
+                -- Material existed during scan but now all reserved/gone
+                self.buildStep = nil
+                self.buildStepBp = nil
                 self.task = nil
                 self.thinkTimer = 3
-                if step.need == "wall" then self:_setThought("need_wall"); self.thoughtTimer = 5
-                elseif step.need == "roof" then self:_setThought("need_roof"); self.thoughtTimer = 5
-                end
-                -- Publish help_needed marker
-                self.world:addMarker("help_needed", self.gx, self.gz, self.npcId)
             end
         end
     elseif step.action == "break" then
@@ -852,8 +1116,33 @@ end
 function NPC:_doPlaceBlock(dt)
     local tgt = self.task.target
     if not self.carriedBlock then self:_completeTask(); return end
-    if self:_canReach(tgt.x, tgt.y, tgt.z) then
-        -- Clear wrong-type block at target
+
+    -- Ground-based building: NPC walks near the blueprint perimeter,
+    -- then places the block remotely at any height. Like RimWorld's construction.
+    local bp = self.helpingBlueprint or self.blueprint
+    local nearBuild
+    if bp then
+        -- Within 3 blocks of building perimeter
+        local ox, oz = bp.originX, bp.originZ
+        local inX = self.gx >= ox - 3 and self.gx <= ox + bp.width + 2
+        local inZ = self.gz >= oz - 3 and self.gz <= oz + bp.depth + 2
+        nearBuild = inX and inZ
+    else
+        nearBuild = self:_canReach(tgt.x, tgt.y, tgt.z)
+    end
+
+    if nearBuild then
+        -- Double-check: is this step already done? (another NPC may have completed it)
+        if self:_isStepDone(self.task.step) then
+            -- Step already completed correctly — just drop our block and move on
+            self:_dropBlockNearBuilding()
+            self.buildStep = nil
+            self.buildStepBp = nil
+            self:_completeTask()
+            return
+        end
+
+        -- Close enough to the building — place the block remotely
         local k = self.world:_key(tgt.x, tgt.y, tgt.z)
         local existing = self.world.occupied[k]
         if existing then
@@ -861,17 +1150,21 @@ function NPC:_doPlaceBlock(dt)
             if existing.state == "loose" then
                 needClear = true
             elseif existing.state == "placed" then
-                local def = self.items.get(existing.itemType)
-                if self.task.step.action == "place_furniture" or self.task.step.exactType then
+                if self.task.step.exactType or self.task.step.action == "place_furniture" then
                     needClear = (existing.itemType ~= self.task.step.need)
                 else
+                    local def = self.items.get(existing.itemType)
                     needClear = not (def and def.building_type == self.task.step.need)
                 end
             end
             if needClear then
+                log.write("build", "%s REPLACING %s with %s at (%d,%d,%d)",
+                    self.name, existing.itemType, self.task.step.need, tgt.x, tgt.y, tgt.z)
                 local etype = existing.itemType
                 self.world:removeBlock(existing)
-                local fx, fz = self.world:_findFreeGround(tgt.x, tgt.z)
+                -- Drop cleared block OUTSIDE building to prevent interior contamination
+                local fx, fz = bp and self:_findGroundOutsideBuilding(bp)
+                    or self.world:_findFreeGround(tgt.x, tgt.z)
                 if fx then self.world:addBlock(fx, 0, fz, etype, "loose") end
             end
         end
@@ -880,8 +1173,7 @@ function NPC:_doPlaceBlock(dt)
         self.carriedBlock = nil
         local placed = self.world:addBlock(tgt.x, tgt.y, tgt.z, self.task.step.need, "placed")
         if placed then
-            placed.noGravity = true  -- NPC-placed blocks don't fall
-            -- Copy block metadata (facing, half, shape) for non-cube rendering
+            placed.noGravity = true
             if self.task.step then
                 placed.facing = self.task.step.facing
                 placed.half = self.task.step.half
@@ -890,41 +1182,27 @@ function NPC:_doPlaceBlock(dt)
             end
         end
         if not placed then
-            -- Target still occupied — recover the block as loose nearby
-            local fx, fz = self.world:_findFreeGround(self.gx, self.gz)
-            if fx then self.world:addBlock(fx, 0, fz, carryType, "loose") end
+            self:_dropBlockNearBuilding()
             self:_failTask()
-            self.thinkTimer = 2  -- wait before retrying
             return
         end
         if self.task.step.action == "place_furniture" then
             self.comfort = math.min(self.cfg.COMFORT_MAX, self.comfort + self.cfg.COMFORT_FURNITURE_BONUS)
         end
-        -- Cooperative building affinity bonus
-        local cbp = self.helpingBlueprint or self.blueprint
-        if cbp then
-            for _, other in ipairs(self.allNpcs) do
-                if other ~= self and not other.dead then
-                    local obp = other.helpingBlueprint or other.blueprint
-                    if obp == cbp then
-                        local rel = self:_getRelation(other)
-                        rel.affinity = math.min(100, rel.affinity + self.cfg.AFFINITY_COOP_BONUS)
-                        rel.interactions = rel.interactions + 1
-                    end
-                end
-            end
-        end
         self.path = nil
+        self.buildStep = nil
+        self.buildStepBp = nil
         self:_completeTask()
     else
-        self:_moveToReach(tgt.x, tgt.y, tgt.z, dt)
-        -- Bail out if stuck too long (can't reach target)
-        if not self.path and self.task.timer > 10 then
-            log.write("build", "%s gave up placing %s at (%d,%d,%d)", self.name, self.task.step.need or "?", tgt.x, tgt.y, tgt.z)
-            self:_dropBlock()
-            local bp = self.helpingBlueprint or self.blueprint
-            if bp then Blueprint.advance(bp) end
-            self:_completeTask()
+        -- Walk toward the building perimeter (door position, always walkable)
+        local walkX = bp and bp.doorX or tgt.x
+        local walkZ = bp and (bp.doorZ - 1) or tgt.z  -- one step outside door
+        -- Clamp to grid
+        if walkX < 0 then walkX = 0 end
+        if walkZ < 0 then walkZ = 0 end
+        self:_moveTo(walkX, 0, walkZ, dt)
+        if self.task.timer > 15 then
+            self:_failTask()
         end
     end
 end
@@ -941,9 +1219,11 @@ function NPC:_doBreakBlock(dt)
         local block = self.world.occupied[k]
         local blockType = block and block.itemType or nil
         self.world:breakBlockAt(tgt.x, tgt.y, tgt.z)
-        -- Drop the broken block as loose at ground level (material recovery)
+        -- Drop the broken block OUTSIDE building
         if blockType then
-            local fx, fz = self.world:_findFreeGround(tgt.x, tgt.z)
+            local bp2 = self.helpingBlueprint or self.blueprint
+            local fx, fz = bp2 and self:_findGroundOutsideBuilding(bp2)
+                or self.world:_findFreeGround(tgt.x, tgt.z)
             if fx then self.world:addBlock(fx, 0, fz, blockType, "loose") end
         end
         self.path = nil
@@ -1310,10 +1590,9 @@ end
 ----------------------------------------------------------------------------
 function NPC:_moveTo(tx, ty, tz, dt)
     if self.gx == tx and self.gy == ty and self.gz == tz then return true end
-    local needRecalc = (not self.path)
-        or (not self.pathTarget)
-        or (self.pathTarget.x ~= tx or self.pathTarget.y ~= ty or self.pathTarget.z ~= tz)
-        or self.pathRecalcTimer <= 0
+    local sameTarget = self.pathTarget
+        and self.pathTarget.x == tx and self.pathTarget.y == ty and self.pathTarget.z == tz
+    local needRecalc = not sameTarget or self.pathRecalcTimer <= 0
     if needRecalc then
         self.path = Pathfind.findPath(self.world, self.gx, self.gy, self.gz, tx, ty, tz, self.cfg.PATH_MAX_NODES)
         self.pathIdx = 1
@@ -1321,15 +1600,18 @@ function NPC:_moveTo(tx, ty, tz, dt)
         self.pathRecalcTimer = self.cfg.PATH_RECALC_TIME
         if not self.path then return false end
     end
+    if not self.path then return false end
     return self:_followPath(dt)
 end
 
 function NPC:_moveToReach(tx, ty, tz, dt)
     if self:_canReach(tx, ty, tz) then return true end
-    local needRecalc = (not self.path)
-        or (not self.pathTarget)
-        or (self.pathTarget.x ~= tx or self.pathTarget.y ~= ty or self.pathTarget.z ~= tz)
-        or self.pathRecalcTimer <= 0
+
+    -- Direct pathfinding to reach target (no scaffold routing needed —
+    -- building uses ground-based placement now)
+    local sameTarget = self.pathTarget
+        and self.pathTarget.x == tx and self.pathTarget.y == ty and self.pathTarget.z == tz
+    local needRecalc = not sameTarget or self.pathRecalcTimer <= 0
     if needRecalc then
         self.path = Pathfind.findPathToReach(self.world, self.gx, self.gy, self.gz, tx, ty, tz, self.cfg.PATH_MAX_NODES)
         self.pathIdx = 1
@@ -1337,6 +1619,7 @@ function NPC:_moveToReach(tx, ty, tz, dt)
         self.pathRecalcTimer = self.cfg.PATH_RECALC_TIME
         if not self.path then return false end
     end
+    if not self.path then return false end
     return self:_followPath(dt)
 end
 
@@ -1353,6 +1636,13 @@ function NPC:_followPath(dt)
     if self.injured then stepTime = stepTime * self.cfg.HP_INJURED_SPEED_MULT end
     self.stepTimer = stepTime
     local wp = self.path[self.pathIdx]
+    -- Auto-open doors in the way (check feet and head height)
+    for dy = 0, 1 do
+        local door = self.world:getDoorAt(wp.x, wp.y + dy, wp.z)
+        if door and not door.doorOpen then
+            self.world:openDoor(door)
+        end
+    end
     -- Validate waypoint: if blocked by new block, invalidate path and recalc
     if not self.world:canStandAt(wp.x, wp.y, wp.z) then
         self.path = nil
@@ -1382,6 +1672,8 @@ end
 function NPC:_failTask()
     self:_dropBlock()
     self.task = nil
+    self.buildStep = nil      -- release step claim so others can take it
+    self.buildStepBp = nil
     self.thinkTimer = 0
     self.path = nil
 end
@@ -1391,7 +1683,49 @@ function NPC:_dropBlock()
     local itemType = self.carriedBlock.itemType
     self.world:removeBlock(self.carriedBlock)
     self.carriedBlock = nil
-    self.world:addBlock(self.gx, self.gy, self.gz, itemType, "loose")
+    -- Drop OUTSIDE building footprint to prevent interior contamination
+    local bp = self.helpingBlueprint or self.blueprint
+    if bp then
+        local fx, fz = self:_findGroundOutsideBuilding(bp)
+        if fx then
+            self.world:addBlock(fx, 0, fz, itemType, "loose")
+            return
+        end
+    end
+    local fx, fz = self.world:_findFreeGround(self.gx, self.gz)
+    if fx then self.world:addBlock(fx, 0, fz, itemType, "loose") end
+end
+
+-- Alias for compatibility
+function NPC:_dropBlockNearBuilding()
+    self:_dropBlock()
+end
+
+-- Find free ground position guaranteed OUTSIDE the building footprint
+function NPC:_findGroundOutsideBuilding(bp)
+    local ox, oz = bp.originX, bp.originZ
+    local bw, bd = bp.width, bp.depth
+    -- Search in expanding ring OUTSIDE the building
+    local cx, cz = bp.doorX, bp.doorZ - 2  -- 2 blocks outside the door
+    for r = 0, 15 do
+        for dx = -r, r do
+            for dz = -r, r do
+                if math.abs(dx) == r or math.abs(dz) == r or r == 0 then
+                    local fx, fz = cx + dx, cz + dz
+                    -- Must be OUTSIDE building footprint (with 1-block margin)
+                    local inside = fx >= ox - 1 and fx <= ox + bw
+                                and fz >= oz - 1 and fz <= oz + bd
+                    if not inside
+                       and fx >= 0 and fx < self.world.config.GRID
+                       and fz >= 0 and fz < self.world.config.GRID
+                       and not self.world.occupied[self.world:_key(fx, 0, fz)] then
+                        return fx, fz
+                    end
+                end
+            end
+        end
+    end
+    return nil, nil
 end
 
 ----------------------------------------------------------------------------

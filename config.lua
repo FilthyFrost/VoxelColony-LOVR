@@ -11,7 +11,7 @@ C.NPC_COUNT = 1                -- start with 1 NPC
 C.NPC_SPEED = 2.5
 C.NPC_SPEED_URGENT = 4.5
 C.TEMP_MAX = 100
-C.TEMP_DECAY = 3.0
+C.TEMP_DECAY = 1.0              -- unsheltered NPC survives full night (60s × 1.0 = 60 < 100)
 C.TEMP_REGEN = 1.5
 C.TEMP_SHELTER = 4.0
 C.TEMP_COLD_RATIO = 0.7
@@ -33,7 +33,7 @@ C.ROOM_CAPACITY = 2
 C.CROWD_CHECK_RADIUS = 3
 
 -- Pathfinding
-C.PATH_MAX_NODES = 2000        -- A* search budget (balanced: coverage vs performance)
+C.PATH_MAX_NODES = 1500        -- A* search budget (ground-only pathfinding, no climbing)
 C.PATH_RECALC_TIME = 2.0      -- seconds between path recalculations
 C.NPC_STEP_TIME = 0.2          -- seconds per grid step (movement speed)
 

@@ -62,6 +62,16 @@ function W:update(dt)
         end
     end
 
+    -- Auto-close doors after 3 seconds if no NPC nearby
+    for _, b in ipairs(self.blocks) do
+        if b.itemType == "door" and b.doorOpen and b.doorOpenTime then
+            local elapsed = (self.time - b.doorOpenTime) % self.config.DAY_LEN
+            if elapsed > 3 then
+                self:closeDoor(b)
+            end
+        end
+    end
+
     -- Marker decay
     for i = #self.markers, 1, -1 do
         self.markers[i].strength = self.markers[i].strength - 0.5 * dt
@@ -161,7 +171,66 @@ function W:isSolid(gx, gy, gz)
     local block = self.occupied[self:_key(gx, gy, gz)]
     if not block then return false end
     if block.state == "loose" then return false end
-    if block.itemType == "door" then return false end  -- doors are passable
+    -- Doors: solid when closed, passable when open
+    if block.itemType == "door" then
+        return not block.doorOpen
+    end
+    return true
+end
+
+-- Get door block at position (checks both feet and head height)
+function W:getDoorAt(gx, gy, gz)
+    local block = self.occupied[self:_key(gx, gy, gz)]
+    if block and block.itemType == "door" then return block end
+    return nil
+end
+
+-- Open a door (sets both cells of 2-high door)
+function W:openDoor(block)
+    if not block or block.itemType ~= "door" then return end
+    block.doorOpen = true
+    block.doorOpenTime = self.time
+    -- Find the other half of the door (above or below)
+    local otherY = block.gy + 1
+    local other = self.occupied[self:_key(block.gx, otherY, block.gz)]
+    if other and other.itemType == "door" then
+        other.doorOpen = true
+        other.doorOpenTime = self.time
+    else
+        otherY = block.gy - 1
+        other = self.occupied[self:_key(block.gx, otherY, block.gz)]
+        if other and other.itemType == "door" then
+            other.doorOpen = true
+            other.doorOpenTime = self.time
+        end
+    end
+end
+
+-- Close a door (sets both cells)
+function W:closeDoor(block)
+    if not block or block.itemType ~= "door" then return end
+    block.doorOpen = false
+    block.doorOpenTime = nil
+    local otherY = block.gy + 1
+    local other = self.occupied[self:_key(block.gx, otherY, block.gz)]
+    if other and other.itemType == "door" then
+        other.doorOpen = false; other.doorOpenTime = nil
+    else
+        otherY = block.gy - 1
+        other = self.occupied[self:_key(block.gx, otherY, block.gz)]
+        if other and other.itemType == "door" then
+            other.doorOpen = false; other.doorOpenTime = nil
+        end
+    end
+end
+
+-- Check if a block is solid but treat doors as passable (for pathfinding)
+-- NPCs can path through doors because they'll open them on arrival
+function W:isSolidForPath(gx, gy, gz)
+    local block = self.occupied[self:_key(gx, gy, gz)]
+    if not block then return false end
+    if block.state == "loose" then return false end
+    if block.itemType == "door" then return false end  -- doors always pathable
     return true
 end
 
@@ -172,8 +241,8 @@ end
 function W:canStandAt(gx, gy, gz)
     if gx < 0 or gx >= self.config.GRID or gz < 0 or gz >= self.config.GRID then return false end
     if gy < 0 then return false end
-    local feetClear = not self:isSolid(gx, gy, gz)
-    local headClear = not self:isSolid(gx, gy + 1, gz)
+    local feetClear = not self:isSolidForPath(gx, gy, gz)
+    local headClear = not self:isSolidForPath(gx, gy + 1, gz)
     local hasFloor = (gy == 0) or self:isOccupied(gx, gy - 1, gz)
     return feetClear and headClear and hasFloor
 end
